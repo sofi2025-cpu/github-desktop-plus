@@ -1,6 +1,9 @@
 import * as React from 'react'
-import * as Path from 'path'
-import { WorktreeEntry } from '../../models/worktree'
+import {
+  WorktreeEntry,
+  getWorktreeDescription,
+  getWorktreeDisplayName,
+} from '../../models/worktree'
 import { IMatches } from '../../lib/fuzzy-find'
 import { Octicon } from '../octicons'
 import * as octicons from '../octicons/octicons.generated'
@@ -18,7 +21,8 @@ interface IWorktreeListItemProps {
 export class WorktreeListItem extends React.Component<IWorktreeListItemProps> {
   public render() {
     const { worktree, isCurrentWorktree, matches } = this.props
-    const name = Path.basename(worktree.path)
+    const name = getWorktreeDisplayName(worktree)
+    const description = getWorktreeDescription(worktree)
     const icon = isCurrentWorktree ? octicons.check : octicons.fileDirectory
     const className = classNames('worktrees-list-item', {
       'current-worktree': isCurrentWorktree,
@@ -36,17 +40,15 @@ export class WorktreeListItem extends React.Component<IWorktreeListItemProps> {
         >
           <HighlightText text={name} highlight={matches.title} />
         </TooltippedContent>
-        {worktree.branch && (
-          <TooltippedContent
-            className="description"
-            tooltip={worktree.branch}
-            onlyWhenOverflowed={true}
-            tagName="div"
-            disabled={enableAccessibleListToolTips()}
-          >
-            {worktree.branch}
-          </TooltippedContent>
-        )}
+        <TooltippedContent
+          className="description"
+          tooltip={worktree.branch ?? worktree.head}
+          onlyWhenOverflowed={true}
+          tagName="div"
+          disabled={enableAccessibleListToolTips()}
+        >
+          {description}
+        </TooltippedContent>
       </div>
     )
   }

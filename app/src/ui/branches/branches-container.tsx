@@ -8,7 +8,6 @@ import {
 import { Branch } from '../../models/branch'
 import { BranchesTab } from '../../models/branches-tab'
 import { PopupType } from '../../models/popup'
-import { WorktreeEntry } from '../../models/worktree'
 
 import { Dispatcher } from '../dispatcher'
 import { FoldoutType } from '../../lib/app-state'
@@ -36,6 +35,7 @@ import { DragType, DropTargetType } from '../../models/drag-drop'
 import {
   enablePullRequestQuickView,
   enableResizingToolbarButtons,
+  enableWorktreeSupport,
 } from '../../lib/feature-flag'
 import { PullRequestQuickView } from '../pull-request-quick-view'
 import { Emoji } from '../../lib/emoji'
@@ -53,11 +53,14 @@ interface IBranchesContainerProps {
   readonly onRenameBranch: (branchName: string) => void
   readonly onSetAsDefaultBranch: (branchName: string) => void
   readonly onDeleteBranch: (branchName: string) => void
+  readonly onDeleteUnusedLocalBranches: () => void
+  readonly onCheckoutInNewWorktree?: (branch: Branch) => void
+
+  /** Optional callback to checkout a PR in a new worktree */
+  readonly onCheckoutPRInNewWorktree?: (pullRequest: PullRequest) => void
+  readonly onPullSingleBranch: (branchName: string) => void
 
   readonly branchSortOrder: BranchSortOrder
-
-  /** All worktrees in the repository. */
-  readonly allWorktrees: ReadonlyArray<WorktreeEntry>
 
   /** The pull request associated with the current branch. */
   readonly currentPullRequest: PullRequest | null
@@ -276,7 +279,6 @@ export class BranchesContainer extends React.Component<
             allBranches={this.props.allBranches}
             recentBranches={this.props.recentBranches}
             branchSortOrder={this.props.branchSortOrder}
-            allWorktrees={this.props.allWorktrees}
             onItemClick={this.onBranchItemClick}
             filterText={this.state.branchFilterText}
             onFilterTextChanged={this.onBranchFilterTextChanged}
@@ -293,6 +295,13 @@ export class BranchesContainer extends React.Component<
             onRenameBranch={this.props.onRenameBranch}
             onSetAsDefaultBranch={this.props.onSetAsDefaultBranch}
             onDeleteBranch={this.props.onDeleteBranch}
+            onDeleteUnusedLocalBranches={this.props.onDeleteUnusedLocalBranches}
+            onPullSingleBranch={this.props.onPullSingleBranch}
+            onCheckoutInNewWorktree={
+              enableWorktreeSupport()
+                ? this.props.onCheckoutInNewWorktree
+                : undefined
+            }
           />
         )
       case BranchesTab.PullRequests: {
@@ -386,6 +395,11 @@ export class BranchesContainer extends React.Component<
         isLoadingPullRequests={this.props.isLoadingPullRequests}
         onMouseEnterPullRequest={this.onMouseEnterPullRequestListItem}
         onMouseLeavePullRequest={this.onMouseLeavePullRequestListItem}
+        onCheckoutInNewWorktree={
+          enableWorktreeSupport()
+            ? this.props.onCheckoutPRInNewWorktree
+            : undefined
+        }
       />
     )
   }

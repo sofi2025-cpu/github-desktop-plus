@@ -20,7 +20,7 @@ import { SuccessBanner } from './success-banner'
 import { ConflictsFoundBanner } from './conflicts-found-banner'
 import { OSVersionNoLongerSupportedBanner } from './os-version-no-longer-supported-banner'
 import { WorktreesEnabledBanner } from './worktrees-enabled-banner'
-import { NameChangeSuggestionBanner } from './name-change-suggestion-banner'
+import { ConfigDirMigratedBanner } from './config-dir-migrated-banner'
 
 export function renderBanner(
   banner: Banner,
@@ -181,11 +181,12 @@ export function renderBanner(
           key={'worktrees-enabled'}
         />
       )
-    case BannerType.NameChangeSuggestion:
+    case BannerType.ConfigDirMigrated:
       return (
-        <NameChangeSuggestionBanner
+        <ConfigDirMigratedBanner
+          migratedFromAppName={banner.migratedFromAppName}
           onDismissed={onDismissed}
-          key={'name-change-suggestion'}
+          key={'config-dir-migrated'}
         />
       )
     default:

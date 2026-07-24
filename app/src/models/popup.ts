@@ -27,10 +27,12 @@ import { ISecretScanResult } from '../ui/secret-scanning/push-protection-error-d
 import { BypassReasonType } from '../ui/secret-scanning/bypass-push-protection-dialog'
 import { TerminalOutput, TerminalOutputListener } from '../lib/git'
 import type { IBYOKModel, IBYOKProvider } from '../lib/copilot/byok'
+import { WorktreeEntry } from './worktree'
 
 export enum PopupType {
   RenameBranch = 'RenameBranch',
   DeleteBranch = 'DeleteBranch',
+  DeleteUnusedLocalBranches = 'DeleteUnusedLocalBranches',
   DeleteRemoteBranch = 'DeleteRemoteBranch',
   ConfirmDiscardChanges = 'ConfirmDiscardChanges',
   Preferences = 'Preferences',
@@ -64,6 +66,7 @@ export enum PopupType {
   ConfirmForcePush = 'ConfirmForcePush',
   StashAndSwitchBranch = 'StashAndSwitchBranch',
   ConfirmDiscardStash = 'ConfirmDiscardStash',
+  RenameStash = 'RenameStash',
   ConfirmCheckoutCommit = 'ConfirmCheckoutCommit',
   ConfirmDeletePushedTag = 'ConfirmDeletePushedTag',
   CreateTutorialRepository = 'CreateTutorialRepository',
@@ -85,6 +88,7 @@ export enum PopupType {
   WarnLocalChangesBeforeUndo = 'WarnLocalChangesBeforeUndo',
   WarnUndoPushedCommit = 'WarnUndoPushedCommit',
   WarningBeforeReset = 'WarningBeforeReset',
+  WarnResetToPushedCommit = 'WarnResetToPushedCommit',
   InvalidatedToken = 'InvalidatedToken',
   AddSSHHost = 'AddSSHHost',
   SSHKeyPassphrase = 'SSHKeyPassphrase',
@@ -105,10 +109,13 @@ export enum PopupType {
   ConfirmRestart = 'ConfirmRestart',
   ConfirmCommitFilteredChanges = 'ConfirmCommitFilteredChanges',
   TestAbout = 'TestAbout',
+  TestCLIAction = 'TestCLIAction',
+  TestCopilotSnapshotCard = 'TestCopilotSnapshotCard',
   PushProtectionError = 'PushProtectionError',
   BypassPushProtection = 'BypassPushProtection',
   GenerateCommitMessageOverrideWarning = 'GenerateCommitMessageOverrideWarning',
   GenerateCommitMessageDisclaimer = 'GenerateCommitMessageDisclaimer',
+  CopilotConflictResolutionDisclaimer = 'CopilotConflictResolutionDisclaimer',
   HookFailed = 'HookFailed',
   CommitProgress = 'CommitProgress',
   AddWorktree = 'AddWorktree',
@@ -117,10 +124,15 @@ export enum PopupType {
   CantDeleteCurrentBranch = 'CantDeleteCurrentBranch',
   CantDeleteMainBranch = 'CantDeleteMainBranch',
   CantDeleteCurrentBranchUncommittedChanges = 'CantDeleteCurrentBranchUncommittedChanges',
-  CantDeleteWorktreeUncommittedChanges = 'CantDeleteWorktreeUncommittedChanges',
   EditCopilotBYOKProvider = 'EditCopilotBYOKProvider',
   EditCopilotBYOKModel = 'EditCopilotBYOKModel',
+  CopilotUserSettings = 'CopilotUserSettings',
+  CopilotCustomProviders = 'CopilotCustomProviders',
   ConfirmDeleteCopilotBYOKProvider = 'ConfirmDeleteCopilotBYOKProvider',
+  CopilotConflictResolutionAlwaysNudge = 'CopilotConflictResolutionAlwaysNudge',
+  ManageRemotes = 'ManageRemotes',
+  AddRemote = 'AddRemote',
+  DeleteWorktreeFailed = 'DeleteWorktreeFailed',
 }
 
 interface IBasePopup {
@@ -155,6 +167,11 @@ export type PopupDetail =
       existsOnRemote: boolean
     }
   | {
+      type: PopupType.DeleteUnusedLocalBranches
+      repository: Repository
+      branches: ReadonlyArray<Branch>
+    }
+  | {
       type: PopupType.DeleteRemoteBranch
       repository: Repository
       branch: Branch
@@ -185,6 +202,11 @@ export type PopupDetail =
       otherModelIds: ReadonlyArray<string>
       onSave: (model: IBYOKModel) => void
     }
+  | {
+      type: PopupType.CopilotUserSettings
+      account: Account
+    }
+  | { type: PopupType.CopilotCustomProviders }
   | {
       type: PopupType.ConfirmDeleteCopilotBYOKProvider
       provider: IBYOKProvider
@@ -296,6 +318,11 @@ export type PopupDetail =
       stash: IStashEntry
     }
   | {
+      type: PopupType.RenameStash
+      repository: Repository
+      stash: IStashEntry
+    }
+  | {
       type: PopupType.ConfirmCheckoutCommit
       repository: Repository
       commit: CommitOneLine
@@ -388,6 +415,11 @@ export type PopupDetail =
     }
   | {
       type: PopupType.WarningBeforeReset
+      repository: Repository
+      commit: Commit
+    }
+  | {
+      type: PopupType.WarnResetToPushedCommit
       repository: Repository
       commit: Commit
     }
@@ -497,6 +529,12 @@ export type PopupDetail =
       type: PopupType.TestAbout
     }
   | {
+      type: PopupType.TestCLIAction
+    }
+  | {
+      type: PopupType.TestCopilotSnapshotCard
+    }
+  | {
       type: PopupType.PushProtectionError
       secrets: ReadonlyArray<ISecretScanResult>
     }
@@ -522,6 +560,14 @@ export type PopupDetail =
       filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
     }
   | {
+      type: PopupType.CopilotConflictResolutionDisclaimer
+      repository: Repository
+    }
+  | {
+      type: PopupType.CopilotConflictResolutionAlwaysNudge
+      repository: Repository
+    }
+  | {
       type: PopupType.HookFailed
       hookName: string
       terminalOutput: TerminalOutput
@@ -534,6 +580,8 @@ export type PopupDetail =
   | {
       type: PopupType.AddWorktree
       repository: Repository
+      initialBranchName?: string
+      initialWorktreeName?: string
     }
   | {
       type: PopupType.RenameWorktree
@@ -544,11 +592,21 @@ export type PopupDetail =
       type: PopupType.DeleteWorktree
       repository: Repository
       worktreePath: string
-      storedRepositoryToRemove: Repository | null
-      isDeletingCurrentWorktree: boolean
     }
   | {
-      type: PopupType.CantDeleteWorktreeUncommittedChanges
+      type: PopupType.ManageRemotes
+      repository: Repository
+    }
+  | {
+      type: PopupType.AddRemote
+      repository: Repository
+      existingRemoteNames: ReadonlyArray<string>
+    }
+  | {
+      type: PopupType.DeleteWorktreeFailed
+      repository: Repository
       worktreePath: string
+      error: Error
+      originalWorktree: WorktreeEntry | null
     }
 export type Popup = IBasePopup & PopupDetail

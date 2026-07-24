@@ -1,22 +1,20 @@
+import * as Path from 'path'
 import {
   Repository,
   ILocalRepositoryState,
+  nameOf,
   isRepositoryWithGitHubRepository,
   RepositoryWithGitHubRepository,
 } from '../../models/repository'
 import { CloningRepository } from '../../models/cloning-repository'
 import { getHTMLURL } from '../../lib/api'
-import { compare } from '../../lib/compare'
+import { caseInsensitiveCompare, compare } from '../../lib/compare'
 import { IFilterListGroup, IFilterListItem } from '../lib/filter-list'
 import { IAheadBehind } from '../../models/branch'
+import { WorktreeEntry } from '../../models/worktree'
 import { assertNever } from '../../lib/fatal-error'
 import { isGHE, isGHES } from '../../lib/endpoint-capabilities'
 import { Owner } from '../../models/owner'
-import { normalizePath } from '../../lib/helpers/path'
-import {
-  getRepositoryListTitle,
-  toSortedRepositoryListItems,
-} from './worktree-list-items'
 
 export type RepositoryListGroup = (
   | {
@@ -63,23 +61,21 @@ export type Repositoryish = Repository | CloningRepository
 export interface IRepositoryListItem extends IFilterListItem {
   readonly text: ReadonlyArray<string>
   readonly id: string
-  readonly title: string
   readonly repository: Repositoryish
   readonly needsDisambiguation: boolean
   readonly aheadBehind: IAheadBehind | null
   readonly changedFilesCount: number
   readonly branchName: string | null
   readonly defaultBranchName: string | null
-  readonly isNestedWorktree: boolean
-  readonly mainWorktreeName: string | null
-  readonly isVirtualLinkedWorktree: boolean
-  readonly isPrunableWorktree: boolean
-  readonly worktreePath: string | null
-  readonly sourceRepository: Repository | null
-}
-
-interface IGroupRepositoriesOptions {
-  readonly showWorktreesInSidebar?: boolean
+  /**
+   * The worktree this row represents, when worktrees are shown in the list.
+   *
+   * The repository row carries the main worktree (so clicking it switches to
+   * the main worktree); linked worktrees each get their own row nested below
+   * it. `null` when worktree info isn't available (feature disabled or not yet
+   * loaded), in which case the row is a plain repository row.
+   */
+  readonly worktree: WorktreeEntry | null
 }
 
 const recentRepositoriesThreshold = 7
@@ -114,24 +110,11 @@ type RepoGroupItem = { group: RepositoryListGroup; repos: Repositoryish[] }
 export function groupRepositories(
   repositories: ReadonlyArray<Repositoryish>,
   localRepositoryStateLookup: ReadonlyMap<number, ILocalRepositoryState>,
-  recentRepositories: ReadonlyArray<number>,
-  options: IGroupRepositoriesOptions = {}
+  recentRepositories: ReadonlyArray<number>
 ): ReadonlyArray<IFilterListGroup<IRepositoryListItem, RepositoryListGroup>> {
   const includeRecentGroup = repositories.length > recentRepositoriesThreshold
   const recentSet = includeRecentGroup ? new Set(recentRepositories) : undefined
   const groups = new Map<string, RepoGroupItem>()
-  const repositoryByPath = new Map<string, Repository>()
-  const storedRepositoryPaths = new Set<string>()
-
-  for (const repository of repositories) {
-    if (!(repository instanceof Repository)) {
-      continue
-    }
-
-    const normalizedPath = normalizePath(repository.path)
-    repositoryByPath.set(normalizedPath, repository)
-    storedRepositoryPaths.add(normalizedPath)
-  }
 
   const addToGroup = (group: RepositoryListGroup, repo: Repositoryish) => {
     const key = getGroupKey(group)
@@ -160,24 +143,22 @@ export function groupRepositories(
         group,
         repos,
         localRepositoryStateLookup,
-        groups,
-        repositoryByPath,
-        storedRepositoryPaths,
-        options
+        groups
       ),
     }))
 }
+
+// Returns the display title for a repository, which is either the alias
+// (if available) or the name.
+const getDisplayTitle = (r: Repositoryish) =>
+  r instanceof Repository && r.alias != null ? r.alias : r.name
 
 const toSortedListItems = (
   group: RepositoryListGroup,
   repositories: ReadonlyArray<Repositoryish>,
   localRepositoryStateLookup: ReadonlyMap<number, ILocalRepositoryState>,
-  groups: Map<string, RepoGroupItem>,
-  repositoryByPath: ReadonlyMap<string, Repository>,
-  storedRepositoryPaths: ReadonlySet<string>,
-  options: IGroupRepositoriesOptions
+  groups: Map<string, RepoGroupItem>
 ): IRepositoryListItem[] => {
-  const showWorktreesInSidebar = options.showWorktreesInSidebar ?? false
   const groupNames = new Map<string, number>()
   const allNames = new Map<string, number>()
 
@@ -188,25 +169,98 @@ const toSortedListItems = (
       continue
     }
 
-    for (const title of groupItem.repos.map(repo =>
-      getRepositoryListTitle(repo, showWorktreesInSidebar)
-    )) {
+    for (const title of groupItem.repos.map(getDisplayTitle)) {
       allNames.set(title, (allNames.get(title) ?? 0) + 1)
       if (groupItem.group === group) {
         groupNames.set(title, (groupNames.get(title) ?? 0) + 1)
       }
     }
   }
-  return toSortedRepositoryListItems({
-    group,
-    repositories,
-    localRepositoryStateLookup,
-    groupNames,
-    allNames,
-    repositoryByPath,
-    storedRepositoryPaths,
-    showWorktreesInSidebar,
-  })
+
+  return repositories
+    .map(r => {
+      const repoState = localRepositoryStateLookup.get(r.id)
+      const title = getDisplayTitle(r)
+
+      const needsDisambiguation =
+        // If the repository is in the enterprise group and has a duplicate
+        // name in the group, we need to disambiguate it. We don't have to
+        // disambiguate repositories in the 'dotcom' group because they are
+        // already grouped by owner. If the repository is in the 'recent'
+        // group and has a duplicate name in any group, we need to
+        // disambiguate it.
+        ((groupNames.get(title) ?? 0) > 1 && group.kind === 'enterprise') ||
+        ((allNames.get(title) ?? 0) > 1 && group.kind === 'recent')
+
+      return buildRepositoryRows(r, repoState, needsDisambiguation)
+    })
+    .sort((x, y) =>
+      caseInsensitiveCompare(
+        getDisplayTitle(x[0].repository),
+        getDisplayTitle(y[0].repository)
+      )
+    )
+    .flat()
+}
+
+const shortBranchName = (branch: string | null): string | null =>
+  branch ? branch.replace(/^refs\/heads\//, '') : null
+
+/**
+ * Builds the list rows for a single repository: the repository row itself
+ * (representing the main worktree) followed by one row per linked worktree.
+ */
+function buildRepositoryRows(
+  r: Repositoryish,
+  repoState: ILocalRepositoryState | undefined,
+  needsDisambiguation: boolean
+): IRepositoryListItem[] {
+  const title = getDisplayTitle(r)
+  const defaultBranchName = repoState?.defaultBranchName ?? null
+
+  const worktrees = r instanceof Repository ? repoState?.worktrees ?? [] : []
+  const mainWorktree = worktrees.find(wt => wt.type === 'main') ?? null
+
+  const aheadBehind = repoState?.aheadBehind ?? null
+  const changedFilesCount = repoState?.changedFilesCount ?? 0
+  const isMainWorktreeActive =
+    mainWorktree === null || mainWorktree.path === r.path
+  const mainWorktreeText =
+    r instanceof Repository ? [title, nameOf(r)] : [title]
+
+  const mainWorktreeRow: IRepositoryListItem = {
+    text: mainWorktreeText,
+    id: r.id.toString(),
+    repository: r,
+    needsDisambiguation,
+    aheadBehind: isMainWorktreeActive ? aheadBehind : null,
+    changedFilesCount: isMainWorktreeActive ? changedFilesCount : 0,
+    branchName: mainWorktree
+      ? shortBranchName(mainWorktree.branch)
+      : repoState?.branchName ?? null,
+    defaultBranchName,
+    worktree: mainWorktree,
+  }
+
+  // Linked worktree rows match the same filter text as their repository so they travel with it
+  const linkedWorktreeRows = worktrees
+    .filter(wt => wt.type === 'linked')
+    .map((wt): IRepositoryListItem => {
+      const isActiveWorktree = wt.path === r.path
+      return {
+        text: [Path.basename(wt.path)],
+        id: `${r.id}:${wt.path}`,
+        repository: r,
+        needsDisambiguation: false,
+        aheadBehind: isActiveWorktree ? aheadBehind : null,
+        changedFilesCount: isActiveWorktree ? changedFilesCount : 0,
+        branchName: shortBranchName(wt.branch),
+        defaultBranchName,
+        worktree: wt,
+      }
+    })
+
+  return [mainWorktreeRow, ...linkedWorktreeRows]
 }
 
 /**
@@ -223,18 +277,27 @@ export function buildPinnedGroup(
     return null
   }
 
-  const idToItem = new Map<number, IRepositoryListItem>()
+  const idToItems = new Map<number, IRepositoryListItem[]>()
+  const completedIds = new Set<number>()
   for (const group of allGroups) {
     for (const item of group.items) {
-      if (item.repository.id > 0 && !idToItem.has(item.repository.id)) {
-        idToItem.set(item.repository.id, item)
+      const id = item.repository.id
+      if (id <= 0 || completedIds.has(id)) {
+        continue
       }
+      const rows = idToItems.get(id)
+      if (rows === undefined) {
+        idToItems.set(id, [item])
+      } else {
+        rows.push(item)
+      }
+    }
+    for (const id of idToItems.keys()) {
+      completedIds.add(id)
     }
   }
 
-  const items = pinnedIds
-    .map(id => idToItem.get(id))
-    .filter((item): item is IRepositoryListItem => item !== undefined)
+  const items = pinnedIds.flatMap(id => idToItems.get(id) ?? [])
 
   if (items.length === 0) {
     return null

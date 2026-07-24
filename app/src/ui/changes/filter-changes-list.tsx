@@ -171,6 +171,7 @@ interface IFilterChangesListProps {
   readonly onShowCommitProgress?: (() => void) | undefined
   readonly isGeneratingCommitMessage: boolean
   readonly shouldShowGenerateCommitMessageCallOut: boolean
+  readonly commitMessageGenerationDisabled: boolean
   readonly commitToAmend: Commit | null
   readonly currentBranchProtected: boolean
   readonly currentRepoRulesInfo: RepoRulesInfo
@@ -1073,7 +1074,12 @@ export class FilterChangesList extends React.Component<
           this.onConfirmCommitWithUnknownCoAuthors
         }
         onPersistCommitMessage={this.onPersistCommitMessage}
-        onGenerateCommitMessage={this.onGenerateCommitMessage}
+        onGenerateCommitMessage={
+          this.props.commitMessageGenerationDisabled
+            ? undefined
+            : this.onGenerateCommitMessage
+        }
+        onCancelGenerateCommitMessage={this.onCancelGenerateCommitMessage}
         onCommitMessageFocusSet={this.onCommitMessageFocusSet}
         onRefreshAuthor={this.onRefreshAuthor}
         onShowPopup={this.onShowPopup}
@@ -1140,6 +1146,10 @@ export class FilterChangesList extends React.Component<
           this.props.repository,
           filesSelected
         )
+  }
+
+  private onCancelGenerateCommitMessage = () => {
+    this.props.dispatcher.cancelGenerateCommitMessage(this.props.repository)
   }
 
   private onShowPopup = (p: Popup) => this.props.dispatcher.showPopup(p)

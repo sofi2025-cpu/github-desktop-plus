@@ -176,7 +176,7 @@ export class PullRequestQuickView extends React.Component<
           {this.getViewOnGitHubLabel(
             this.props.pullRequest.base.gitHubRepository.type
           )}
-          <Octicon symbol={octicons.linkExternal} />
+          <Octicon symbol={octicons.linkExternal} className="ml" />
         </Button>
       </header>
     )
@@ -190,6 +190,8 @@ export class PullRequestQuickView extends React.Component<
         return 'View on Bitbucket'
       case 'gitlab':
         return 'View on GitLab'
+      case 'codeberg':
+        return 'View on Codeberg'
       default:
         assertNever(repoType, `Unknown repo type: ${repoType}`)
     }

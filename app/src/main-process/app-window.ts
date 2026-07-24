@@ -37,6 +37,14 @@ export class AppWindow {
   private _rendererReadyTime: number | null = null
   private isDownloadingUpdate: boolean = false
 
+  /**
+   * The path of the repository currently selected in this window, as reported
+   * by the renderer, or null if no repository is selected. Used to route
+   * `open-repository` actions to the window that already has the repository
+   * open.
+   */
+  private _selectedRepositoryPath: string | null = null
+
   private minWidth = 960
   private minHeight = 660
 
@@ -196,10 +204,17 @@ export class AppWindow {
       this.window.webContents.setVisualZoomLevelLimits(1, 1)
     })
 
-    this.window.webContents.on('did-fail-load', () => {
-      this.window.webContents.openDevTools()
-      this.window.show()
-    })
+    this.window.webContents.on(
+      'did-fail-load',
+      (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+        // Ignore in subframes (like PR quick view)
+        if (!isMainFrame) {
+          return
+        }
+        this.window.webContents.openDevTools()
+        this.window.show()
+      }
+    )
 
     const rendererReadyListener = ipcMain.on(
       'renderer-ready',
@@ -329,6 +344,19 @@ export class AppWindow {
 
   public setTitle(title: string) {
     this.window.setTitle(title)
+  }
+
+  /** The path of the repository currently selected in this window, if any. */
+  public get selectedRepositoryPath(): string | null {
+    return this._selectedRepositoryPath
+  }
+
+  public setSelectedRepositoryPath(path: string | null) {
+    this._selectedRepositoryPath = path
+  }
+
+  public hasSelectedRepositoryPath(): this is AppWindowWithSelectedRepository {
+    return this.isLoaded && this.selectedRepositoryPath !== null
   }
 
   /** Selects all the windows web contents */
@@ -607,6 +635,10 @@ export class AppWindow {
       task()
     }
   }
+}
+
+export type AppWindowWithSelectedRepository = AppWindow & {
+  selectedRepositoryPath: string
 }
 
 const trySetUpdaterGuid = async (url: string) => {

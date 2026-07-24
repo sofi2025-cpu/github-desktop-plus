@@ -1,14 +1,10 @@
-import { describe, it, beforeEach } from 'node:test'
+import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
 import { join } from 'path'
 import { RepositoriesStore } from '../../src/lib/stores/repositories-store'
 import { TestRepositoriesDatabase } from '../helpers/databases'
 import { IAPIFullRepository, getDotComAPIEndpoint } from '../../src/lib/api'
-import {
-  assertIsRepositoryWithGitHubRepository,
-  Repository,
-} from '../../src/models/repository'
-import { gitHubRepoFixture } from '../helpers/github-repo-builder'
+import { assertIsRepositoryWithGitHubRepository } from '../../src/models/repository'
 
 describe('RepositoriesStore', () => {
   let repoDb = new TestRepositoriesDatabase()
@@ -18,6 +14,10 @@ describe('RepositoriesStore', () => {
     repoDb = new TestRepositoriesDatabase()
     await repoDb.reset()
     repositoriesStore = new RepositoriesStore(repoDb)
+  })
+
+  afterEach(() => {
+    repoDb.close()
   })
 
   describe('adding a new repository', () => {
@@ -124,24 +124,6 @@ describe('RepositoriesStore', () => {
         firstRepo.gitHubRepository.dbID,
         secondRepo.gitHubRepository.dbID
       )
-    })
-  })
-
-  describe('stash check tracking', () => {
-    it('ignores transient synthetic repositories', async () => {
-      const syntheticRepo = new Repository(
-        '/tmp/repo-feature-a',
-        -1,
-        gitHubRepoFixture({ owner: 'example', name: 'repo' }),
-        false
-      )
-
-      assert.equal(
-        await repositoriesStore.getLastStashCheckDate(syntheticRepo),
-        null
-      )
-
-      await repositoriesStore.updateLastStashCheckDate(syntheticRepo)
     })
   })
 })

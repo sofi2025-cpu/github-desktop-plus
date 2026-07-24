@@ -2,7 +2,6 @@
 /* eslint-disable no-sync */
 
 import * as Path from 'path'
-import * as Fs from 'fs'
 import { spawnSync, SpawnSyncOptions } from 'child_process'
 
 import glob from 'glob'
@@ -70,21 +69,18 @@ findYarnVersion(path => {
     process.exit(result.status || 1)
   }
 
+  // Electron >= 42 no longer downloads its prebuilt binary in its own
+  // postinstall; do it eagerly so scripts that read node_modules/electron/dist
+  // (e.g. validate-macos-version) keep working without first requiring electron.
+  const electronInstallScript = require.resolve('electron/install.js')
+  result = spawnSync(process.execPath, [electronInstallScript], options)
+
+  if (result.status !== 0) {
+    console.error('Failed to install app dependencies. Code:', result.status)
+    process.exit(result.status || 1)
+  }
+
   if (!isOffline()) {
-    // Electron >= 42 no longer downloads its prebuilt binary in its own
-    // postinstall; do it eagerly so scripts that read node_modules/electron/dist
-    // (e.g. validate-macos-version) keep working without first requiring electron.
-    // In offline/flatpak builds, electron-packager finds the binary via the
-    // @electron/get cache (XDG_CACHE_HOME/electron) pre-populated by
-    // generated-sources.json, so running install.js is not necessary.
-    const electronInstallScript = require.resolve('electron/install.js')
-    result = spawnSync(process.execPath, [electronInstallScript], options)
-
-    if (result.status !== 0) {
-      console.error('Failed to install app dependencies. Code:', result.status)
-      process.exit(result.status || 1)
-    }
-
     result = spawnSync(
       'git',
       ['submodule', 'update', '--recursive', '--init'],
@@ -138,24 +134,3 @@ findYarnVersion(path => {
     }
   }
 })
-
-if (process.env.FLATPAK_ID) {
-  console.log('Making flatpak-specific adjustments…')
-
-  const indexHtml = Path.join(root, 'app', 'static', 'index.html')
-
-  if (!Fs.existsSync(indexHtml)) {
-    throw new Error(`Index file not found: ${indexHtml}`)
-  }
-  try {
-    const indexHtmlContents = Fs.readFileSync(indexHtml, 'utf8')
-    const updatedIndexHtmlContents = indexHtmlContents.replace(
-      'GitHub Desktop Plus',
-      'Desktop Plus'
-    )
-    Fs.writeFileSync(indexHtml, updatedIndexHtmlContents, 'utf8')
-    console.log('Successfully updated branding in index.html')
-  } catch (error) {
-    throw new Error(`Failed to update index.html for Flatpak build: ${error}`)
-  }
-}

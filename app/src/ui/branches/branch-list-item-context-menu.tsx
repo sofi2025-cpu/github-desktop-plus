@@ -1,49 +1,50 @@
 import { IMenuItem } from '../../lib/menu-item'
 import { clipboard } from 'electron'
+import { Branch, BranchType } from '../../models/branch'
 import { RepoType } from '../../models/github-repository'
 import { assertNever } from '../../lib/fatal-error'
 
 interface IBranchContextMenuConfig {
-  name: string
-  nameWithoutRemote: string
-  isLocal: boolean
+  branch: Branch
   repoType: RepoType | undefined
-  isInUseByOtherWorktree: boolean
   onRenameBranch?: (branchName: string) => void
   onViewBranchOnGitHub?: () => void
   onViewPullRequestOnGitHub?: () => void
   onSetAsDefaultBranch?: (branchName: string) => void
   onDeleteBranch?: (branchName: string) => void
+  onDeleteUnusedLocalBranches?: () => void
+  onPullSingleBranch?: (branchName: string) => void
+  onCheckoutInNewWorktree?: (branch: Branch) => void
 }
 
 export function generateBranchContextMenuItems(
   config: IBranchContextMenuConfig
 ): IMenuItem[] {
   const {
-    name,
-    nameWithoutRemote,
-    isLocal,
+    branch,
     repoType,
-    isInUseByOtherWorktree,
     onRenameBranch,
     onViewBranchOnGitHub,
     onViewPullRequestOnGitHub,
     onSetAsDefaultBranch,
     onDeleteBranch,
+    onDeleteUnusedLocalBranches,
+    onPullSingleBranch,
+    onCheckoutInNewWorktree,
   } = config
   const items = new Array<IMenuItem>()
 
   if (onRenameBranch !== undefined) {
     items.push({
       label: 'Rename…',
-      action: () => onRenameBranch(name),
-      enabled: isLocal,
+      action: () => onRenameBranch(branch.name),
+      enabled: branch.type === BranchType.Local,
     })
   }
 
   items.push({
     label: __DARWIN__ ? 'Copy Branch Name' : 'Copy branch name',
-    action: () => clipboard.writeText(name),
+    action: () => clipboard.writeText(branch.name),
   })
 
   if (onViewBranchOnGitHub !== undefined && repoType !== undefined) {
@@ -60,18 +61,45 @@ export function generateBranchContextMenuItems(
     })
   }
 
-  if (onSetAsDefaultBranch !== undefined) {
+  if (onCheckoutInNewWorktree !== undefined) {
     items.push({
-      label: __DARWIN__ ? 'Set as Default Branch' : 'Set as default branch',
-      action: () => onSetAsDefaultBranch(nameWithoutRemote),
+      label: __DARWIN__
+        ? 'Checkout in New Worktree…'
+        : 'Checkout in new worktree…',
+      action: () => onCheckoutInNewWorktree(branch),
     })
   }
 
-  if (onDeleteBranch !== undefined && !isInUseByOtherWorktree) {
+  if (onSetAsDefaultBranch !== undefined) {
+    items.push({
+      label: __DARWIN__ ? 'Set as Default Branch' : 'Set as default branch',
+      action: () => onSetAsDefaultBranch(branch.nameWithoutRemote),
+    })
+  }
+
+  if (onPullSingleBranch) {
+    items.push({ type: 'separator' })
+    items.push({
+      label: __DARWIN__ ? 'Pull Branch' : 'Pull branch',
+      action: () => onPullSingleBranch(branch.name),
+      enabled: true,
+    })
+  }
+
+  if (onDeleteBranch !== undefined) {
     items.push({ type: 'separator' })
     items.push({
       label: 'Delete…',
-      action: () => onDeleteBranch(name),
+      action: () => onDeleteBranch(branch.name),
+    })
+  }
+
+  if (onDeleteUnusedLocalBranches !== undefined) {
+    items.push({
+      label: __DARWIN__
+        ? 'Delete Unused Local Branches…'
+        : 'Delete unused local branches…',
+      action: () => onDeleteUnusedLocalBranches(),
     })
   }
 
@@ -87,6 +115,8 @@ function getViewBranchLabel(repoType: RepoType): string {
       return `View ${branch} on Bitbucket`
     case 'gitlab':
       return `View ${branch} on GitLab`
+    case 'codeberg':
+      return `View ${branch} on Codeberg`
     default:
       return assertNever(repoType, `Unknown repo type: ${repoType}`)
   }
@@ -100,6 +130,8 @@ function getViewPullRequestLabel(repoType: RepoType): string {
       return 'View Pull Request on Bitbucket'
     case 'gitlab':
       return 'View Merge Request on GitLab'
+    case 'codeberg':
+      return 'View Pull Request on Codeberg'
     default:
       return assertNever(repoType, `Unknown repo type: ${repoType}`)
   }

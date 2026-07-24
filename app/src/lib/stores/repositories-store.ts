@@ -511,6 +511,59 @@ export class RepositoriesStore extends TypedBaseStore<
   }
 
   /**
+   * Switch the repository to a different worktree path, persisting the target
+   * git directory as a stable anchor for recovery.
+   *
+   * If another repository already exists at the target path, returns that
+   * repository instead of modifying the current one.
+   *
+   * @param repository  The repository to switch
+   * @param worktreePath The path of the worktree to switch to
+   * @param gitDir       The git directory for the target worktree
+   */
+  public async switchWorktree(
+    repository: Repository,
+    worktreePath: string,
+    missing = false,
+    gitDir: string | undefined = repository.gitDir
+  ): Promise<{ repository: Repository; existingRepository: boolean }> {
+    const existing = await this.db.repositories.get({ path: worktreePath })
+
+    if (existing !== undefined) {
+      return {
+        repository: await this.toRepository(existing),
+        existingRepository: true,
+      }
+    }
+
+    await this.db.repositories.update(repository.id, {
+      path: worktreePath,
+      missing,
+      gitDir,
+    })
+
+    this.emitUpdatedRepositories()
+
+    return {
+      repository: new Repository(
+        worktreePath,
+        repository.id,
+        repository.gitHubRepository,
+        missing,
+        repository.alias,
+        repository.groupName,
+        repository.defaultBranch,
+        repository.workflowPreferences,
+        repository.customEditorOverride,
+        repository.isTutorialRepository,
+        repository.overrideLogin,
+        gitDir
+      ),
+      existingRepository: false,
+    }
+  }
+
+  /**
    * Sets the last time the repository was checked for stash entries
    *
    * @param repository The repository in which to update the last stash check date for
@@ -521,12 +574,6 @@ export class RepositoriesStore extends TypedBaseStore<
     repository: Repository,
     date: number = Date.now()
   ): Promise<void> {
-    // Synthetic sidebar-only worktree rows are transient repositories that
-    // are not persisted in the repositories store.
-    if (repository.id < 0) {
-      return
-    }
-
     await this.db.repositories.update(repository.id, {
       lastStashCheckDate: date,
     })
@@ -544,12 +591,6 @@ export class RepositoriesStore extends TypedBaseStore<
   public async getLastStashCheckDate(
     repository: Repository
   ): Promise<number | null> {
-    // Synthetic sidebar-only worktree rows are transient repositories that
-    // are not persisted in the repositories store.
-    if (repository.id < 0) {
-      return null
-    }
-
     let lastCheckDate = this.lastStashCheckCache.get(repository.id) || null
     if (lastCheckDate !== null) {
       return lastCheckDate

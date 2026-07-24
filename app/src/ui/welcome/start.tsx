@@ -7,6 +7,7 @@ import * as octicons from '../octicons/octicons.generated'
 import { Button } from '../lib/button'
 import { Loading } from '../lib/loading'
 import { BrowserRedirectMessage } from '../lib/authentication-form'
+import { ENABLE_TELEMETRY } from '../../lib/telemetry-flag'
 import { SamplesURL } from '../../lib/stats'
 
 /**
@@ -28,18 +29,18 @@ export class Start extends React.Component<IStartProps, {}> {
     return (
       <section
         id="start"
-        aria-label="Welcome to GitHub Desktop"
+        aria-label="Welcome to Desktop Plus"
         aria-describedby="start-description"
       >
         <div className="start-content">
           <h1 className="welcome-title">
-            Welcome to <span>GitHub Desktop</span>
+            Welcome to <span>Desktop Plus</span>
           </h1>
           {!this.props.loadingBrowserAuth ? (
             <>
               <p id="start-description" className="welcome-text">
-                GitHub Desktop is a seamless way to contribute to projects on
-                GitHub and GitHub Enterprise. Sign in below to get started with
+                Desktop Plus is a seamless way to contribute to projects on
+                GitHub and other platforms. Sign in below to get started with
                 your existing projects.
               </p>
             </>
@@ -95,13 +96,15 @@ export class Start extends React.Component<IStartProps, {}> {
               GitHub Privacy Statement.
             </LinkButton>
           </p>
-          <p>
-            GitHub Desktop sends usage metrics to improve the product and inform
-            feature decisions.{' '}
-            <LinkButton uri={SamplesURL}>
-              Learn more about user metrics.
-            </LinkButton>
-          </p>
+          {ENABLE_TELEMETRY && (
+            <p>
+              GitHub Desktop sends usage metrics to improve the product and
+              inform feature decisions.{' '}
+              <LinkButton uri={SamplesURL}>
+                Learn more about user metrics.
+              </LinkButton>
+            </p>
+          )}
         </div>
       </section>
     )

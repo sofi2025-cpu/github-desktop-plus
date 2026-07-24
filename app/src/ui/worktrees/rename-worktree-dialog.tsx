@@ -6,8 +6,6 @@ import { Dispatcher } from '../dispatcher'
 import { Dialog, DialogContent, DialogFooter } from '../dialog'
 import { TextBox } from '../lib/text-box'
 import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
-import { moveWorktree } from '../../lib/git/worktree'
-import { setPreferredWorktreePath } from '../../lib/worktree-preferences'
 
 interface IRenameWorktreeDialogProps {
   readonly repository: Repository
@@ -39,28 +37,23 @@ export class RenameWorktreeDialog extends React.Component<
   }
 
   private onSubmit = async () => {
-    const { worktreePath, repository, dispatcher, onDismissed } = this.props
+    const { worktreePath, repository, onDismissed } = this.props
     const { newName } = this.state
     const newPath = Path.join(Path.dirname(worktreePath), newName)
 
     this.setState({ renaming: true })
 
-    const storedRepo = await dispatcher.getRepositoryForPath(worktreePath)
-    const mainRepoPath = storedRepo?.mainWorktreePath ?? repository.path
+    const success = await this.props.dispatcher.moveWorktree(
+      repository,
+      worktreePath,
+      newPath
+    )
 
-    try {
-      await moveWorktree(repository, worktreePath, newPath)
-      if (storedRepo !== null) {
-        await dispatcher.updateRepositoryPath(storedRepo, newPath)
-      }
-      setPreferredWorktreePath(mainRepoPath, newPath)
-    } catch (e) {
-      dispatcher.postError(e)
-      return
-    } finally {
-      this.setState({ renaming: false })
+    this.setState({ renaming: false })
+
+    if (success) {
+      onDismissed()
     }
-    onDismissed()
   }
 
   public render() {

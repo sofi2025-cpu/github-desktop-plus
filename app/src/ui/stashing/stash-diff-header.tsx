@@ -7,6 +7,7 @@ import { ErrorWithMetadata } from '../../lib/error-with-metadata'
 import { Button } from '../lib/button'
 import { Octicon } from '../octicons'
 import * as octicons from '../octicons/octicons.generated'
+import { RetryActionType } from '../../models/retry-actions'
 
 interface IStashDiffHeaderProps {
   readonly stashEntry: IStashEntry
@@ -39,10 +40,22 @@ export class StashDiffHeader extends React.Component<
 
   public render() {
     const { isRestoring, isDiscarding } = this.state
+    const { stashEntry } = this.props
 
     return (
       <div className="header">
-        <h3>Stashed changes</h3>
+        <div className="title-row">
+          <h3>{stashEntry.customName ?? 'Stashed changes'}</h3>
+          <Button
+            className="rename-stash-button"
+            onClick={this.onRenameClick}
+            tooltip="Rename stash"
+            ariaLabel="Rename stash"
+            disabled={isRestoring || isDiscarding}
+          >
+            <Octicon symbol={octicons.pencil} />
+          </Button>
+        </div>
         <div className="row button-group">
           <Button
             onClick={this.onCloseClick}
@@ -60,7 +73,7 @@ export class StashDiffHeader extends React.Component<
             disabled={isRestoring || isDiscarding}
           >
             <Octicon symbol={octicons.fileDiff} className="mr" />
-            Restore to Changes
+            Restore Changes
           </Button>
           <Button
             onClick={this.onDiscardClick}
@@ -74,6 +87,16 @@ export class StashDiffHeader extends React.Component<
         </div>
       </div>
     )
+  }
+
+  private onRenameClick = () => {
+    const { dispatcher, repository, stashEntry } = this.props
+
+    dispatcher.showPopup({
+      type: PopupType.RenameStash,
+      stash: stashEntry,
+      repository,
+    })
   }
 
   private onDiscardClick = async () => {
@@ -114,6 +137,11 @@ export class StashDiffHeader extends React.Component<
     } catch (err) {
       const errorWithMetadata = new ErrorWithMetadata(err, {
         repository: repository,
+        retryAction: {
+          type: RetryActionType.PopStash,
+          stashEntry,
+          repository,
+        },
       })
       dispatcher.postError(errorWithMetadata)
     } finally {

@@ -32,9 +32,17 @@ export class MultiCommitOperation extends React.Component<IMultiCommitOperationP
             branchSortOrder={this.props.branchSortOrder}
             accounts={this.props.accounts}
             cachedRepoRulesets={this.props.cachedRepoRulesets}
+            shouldShowCopilotConflictResolutionCallOut={
+              this.props.shouldShowCopilotConflictResolutionCallOut
+            }
+            copilotConflictResolutionModel={
+              this.props.copilotConflictResolutionModel
+            }
+            conflictResolutionDisabled={this.props.conflictResolutionDisabled}
             openFileInExternalEditor={this.props.openFileInExternalEditor}
             resolvedExternalEditor={this.props.resolvedExternalEditor}
             openRepositoryInShell={this.props.openRepositoryInShell}
+            wrapDiffLines={this.props.wrapDiffLines}
           />
         )
       case MultiCommitOperationKind.Squash:
@@ -52,9 +60,17 @@ export class MultiCommitOperation extends React.Component<IMultiCommitOperationP
             branchSortOrder={this.props.branchSortOrder}
             accounts={this.props.accounts}
             cachedRepoRulesets={this.props.cachedRepoRulesets}
+            shouldShowCopilotConflictResolutionCallOut={
+              this.props.shouldShowCopilotConflictResolutionCallOut
+            }
+            copilotConflictResolutionModel={
+              this.props.copilotConflictResolutionModel
+            }
+            conflictResolutionDisabled={this.props.conflictResolutionDisabled}
             openFileInExternalEditor={this.props.openFileInExternalEditor}
             resolvedExternalEditor={this.props.resolvedExternalEditor}
             openRepositoryInShell={this.props.openRepositoryInShell}
+            wrapDiffLines={this.props.wrapDiffLines}
           />
         )
       case MultiCommitOperationKind.Reorder:
@@ -72,9 +88,17 @@ export class MultiCommitOperation extends React.Component<IMultiCommitOperationP
             branchSortOrder={this.props.branchSortOrder}
             accounts={this.props.accounts}
             cachedRepoRulesets={this.props.cachedRepoRulesets}
+            shouldShowCopilotConflictResolutionCallOut={
+              this.props.shouldShowCopilotConflictResolutionCallOut
+            }
+            copilotConflictResolutionModel={
+              this.props.copilotConflictResolutionModel
+            }
+            conflictResolutionDisabled={this.props.conflictResolutionDisabled}
             openFileInExternalEditor={this.props.openFileInExternalEditor}
             resolvedExternalEditor={this.props.resolvedExternalEditor}
             openRepositoryInShell={this.props.openRepositoryInShell}
+            wrapDiffLines={this.props.wrapDiffLines}
           />
         )
       default:

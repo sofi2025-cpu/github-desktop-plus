@@ -9,7 +9,6 @@ import {
 } from './workflow-preferences'
 import { assertNever, fatalError } from '../lib/fatal-error'
 import { createEqualityHash } from './equality-hash'
-import { getWorktreePathInfoSync } from '../lib/git/worktree'
 import { getRemotes } from '../lib/git'
 import { findDefaultRemote } from '../lib/stores/helpers/find-default-remote'
 import { isTrustedRemoteHost } from '../lib/api'
@@ -31,19 +30,9 @@ function getBaseName(path: string): string {
   return baseName
 }
 
-/** Base type for a directory you can run git commands successfully */
-export type WorkingTree = {
-  readonly path: string
-}
-
 /** A local repository. */
 export class Repository {
   public readonly name: string
-  /**
-   * The main working tree (what we commonly
-   * think of as the repository's working directory)
-   */
-  private readonly mainWorkTree: WorkingTree
 
   /**
    * A hash of the properties of the object.
@@ -57,16 +46,12 @@ export class Repository {
    */
   private _url: string | null = null
 
-  private _hasLoadedWorktreeInfo = false
-  private _isLinkedWorktree: boolean | undefined = undefined
-  private _mainWorktreePath: string | undefined = undefined
-
   /**
    * @param path The working directory of this repository
    * @param missing Was the repository missing on disk last we checked?
    */
   public constructor(
-    path: string,
+    public readonly path: string,
     public readonly id: number,
     public readonly gitHubRepository: GitHubRepository | null,
     public readonly missing: boolean,
@@ -89,7 +74,6 @@ export class Repository {
      */
     public readonly gitDir: string | undefined = undefined
   ) {
-    this.mainWorkTree = { path }
     this.name = (gitHubRepository && gitHubRepository.name) || getBaseName(path)
 
     this.hash = createEqualityHash(
@@ -107,24 +91,6 @@ export class Repository {
     )
   }
 
-  private ensureWorktreeInfoLoaded() {
-    if (this._hasLoadedWorktreeInfo) {
-      return
-    }
-
-    const worktreeInfo = getWorktreePathInfoSync(this.path)
-    this._isLinkedWorktree = worktreeInfo?.isLinkedWorktree ?? false
-    this._mainWorktreePath = worktreeInfo?.mainWorktreePath ?? this.path
-    this._hasLoadedWorktreeInfo = true
-  }
-
-  public get path(): string {
-    // NOTE: This is not actually the main worktree. We preserve the name "mainWorkTree" to
-    // minimize merge conflicts when pulling changes from the official repo (desktop/desktop).
-    // If isLinkedWorktree = true, this is actually the path to the linked worktree
-    return this.mainWorkTree.path
-  }
-
   /**
    * The resolved path to the .git directory for this repository.
    *
@@ -133,16 +99,6 @@ export class Repository {
    */
   public get resolvedGitDir(): string {
     return this.gitDir ?? Path.join(this.path, '.git')
-  }
-
-  public get isLinkedWorktree(): boolean {
-    this.ensureWorktreeInfoLoaded()
-    return this._isLinkedWorktree ?? false
-  }
-
-  public get mainWorktreePath(): string {
-    this.ensureWorktreeInfoLoaded()
-    return this._mainWorktreePath ?? this.path
   }
 
   public get url(): string | null {
@@ -174,12 +130,6 @@ export class Repository {
       return this.gitHubRepository?.login ?? null
     }
   }
-}
-
-/** A worktree linked to a main working tree (aka `Repository`) */
-export type LinkedWorkTree = WorkingTree & {
-  /** The sha of the head commit in this work tree */
-  readonly head: string
 }
 
 /** Identical to `Repository`, except it **must** have a `gitHubRepository` */
@@ -266,9 +216,10 @@ export interface ILocalRepositoryState {
    */
   readonly defaultBranchName: string | null
   /**
-   * All worktrees known for this repository.
+   * The worktrees associated with this repository (including the main
+   * worktree), or an empty array when not loaded / the feature is disabled.
    */
-  readonly allWorktrees: ReadonlyArray<WorktreeEntry>
+  readonly worktrees: ReadonlyArray<WorktreeEntry>
 }
 
 /**

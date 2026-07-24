@@ -73,6 +73,7 @@ export type RequestChannels = {
   'quit-app': () => void
   'open-repository-in-new-window': (path: string) => void
   'set-window-title': (title: string) => void
+  'set-window-selected-repository': (path: string | null) => void
   'minimize-window': () => void
   'maximize-window': () => void
   'unmaximize-window': () => void
@@ -136,6 +137,7 @@ export type RequestResponseChannels = {
     configDiff: Partial<MainProcessConfig>
   ) => Promise<void>
   'get-main-process-config': () => Promise<MainProcessConfig>
+  'get-config-migration-result': () => Promise<string | null>
   'show-notification': (
     title: string,
     body: string,

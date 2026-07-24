@@ -1,9 +1,15 @@
-import type { ModelInfo } from '@github/copilot-sdk'
-import type { CopilotModelSelections } from './stores/copilot-store'
+import type {
+  CopilotModelsByAccount,
+  CopilotModelSelectionsByAccount,
+  CopilotQuotaSnapshotsByAccount,
+} from './stores/copilot-store'
 import type { IBYOKProvider } from './copilot/byok'
+import type { IConflictResolutionModelDisplay } from './copilot/conflict-resolution-model'
 import type {
   IFileResolution,
   IConflictResolutionProgress,
+  ICopilotResolutionSummary,
+  ICopilotSkippedFile,
 } from './copilot-conflict-resolution'
 import { Account } from '../models/account'
 import { CommitIdentity } from '../models/commit-identity'
@@ -14,6 +20,7 @@ import { Branch, IAheadBehind } from '../models/branch'
 import { Tip } from '../models/tip'
 import { Commit } from '../models/commit'
 import { CommittedFileChange, WorkingDirectoryStatus } from '../models/status'
+import { WorktreeEntry } from '../models/worktree'
 import { CloningRepository } from '../models/cloning-repository'
 import { IMenu } from '../models/app-menu'
 import { IRemote } from '../models/remote'
@@ -33,7 +40,6 @@ import {
   ICloneProgress,
   IMultiCommitOperationProgress,
 } from '../models/progress'
-import { WorktreeEntry } from '../models/worktree'
 
 import { SignInState } from './stores/sign-in-store'
 
@@ -263,6 +269,9 @@ export interface IAppState {
   /** Should the app prompt the user to confirm commit message override? */
   readonly askForConfirmationOnCommitMessageOverride: boolean
 
+  /** Should the app prompt the user to confirm worktree removal? */
+  readonly askForConfirmationOnWorktreeRemoval: boolean
+
   /** How the app should handle uncommitted changes when switching branches */
   readonly uncommittedChangesStrategy: UncommittedChangesStrategy
 
@@ -305,6 +314,9 @@ export interface IAppState {
   /** Whether we should show the diff minimap */
   readonly showDiffMinimap: boolean
 
+  /** Whether text diff lines should wrap within the viewport */
+  readonly wrapDiffLines: boolean
+
   /** The user's preferred shell. */
   readonly selectedShell: Shell
 
@@ -341,11 +353,17 @@ export interface IAppState {
   /** Whether or not the worktrees dropdown should be shown in the toolbar */
   readonly showWorktrees: boolean
 
-  /** Whether linked worktrees should be shown under their repository in the sidebar */
-  readonly showWorktreesInSidebar: boolean
+  /** Whether or not linked worktrees should be shown in the repository list */
+  readonly showWorktreesInRepoList: boolean
 
   /** Whether or not the Compare tab should be shown in the repository view */
   readonly showCompareTab: boolean
+
+  /**
+   * Whether commit summaries that follow the Conventional Commits format should
+   * render their type prefix as a colored badge in the commit list.
+   */
+  readonly showConventionalCommitBadges: boolean
 
   /**
    * A map keyed on a user account (GitHub.com or GitHub Enterprise)
@@ -452,23 +470,23 @@ export interface IAppState {
 
   readonly commitMessageGenerationButtonClicked: boolean
 
+  readonly copilotConflictResolutionDisclaimerLastSeen: number | null
+
+  readonly copilotConflictResolutionClickCount: number
+
+  readonly alwaysUseCopilotForConflictResolution: boolean
+
   /** Whether the changes filter is shown */
   readonly showChangesFilter: boolean
 
-  /**
-   * Per-feature Copilot model selections. An absent key means the default
-   * model will be used for that feature.
-   */
-  readonly selectedCopilotModels: CopilotModelSelections
+  /** Account-scoped Copilot model selections. */
+  readonly selectedCopilotModelsByAccount: CopilotModelSelectionsByAccount
 
-  /**
-   * The list of available Copilot models fetched from the SDK.
-   * Null when the list has not been fetched yet.
-   */
-  readonly copilotModels: ReadonlyArray<ModelInfo> | null
+  /** Account-scoped Copilot model lists, keyed by Copilot account cache key. */
+  readonly copilotModelsByAccount: CopilotModelsByAccount
 
-  /** Whether Copilot is available (i.e. a GitHub.com account is signed in). */
-  readonly copilotAvailable: boolean
+  /** Account-scoped Copilot quota snapshots, keyed by Copilot account cache key. */
+  readonly copilotQuotaSnapshotsByAccount: CopilotQuotaSnapshotsByAccount
 
   /**
    * The list of user-configured Copilot model providers (BYOK). Empty when
@@ -613,7 +631,8 @@ export interface IRepositoryState {
 
   readonly branchesState: IBranchesState
 
-  readonly worktreesState: IWorktreesState
+  /** The worktrees associated with this repository. */
+  readonly worktrees: ReadonlyArray<WorktreeEntry>
 
   /** The commits loaded, keyed by their full SHA. */
   readonly commitLookup: Map<string, Commit>
@@ -641,6 +660,9 @@ export interface IRepositoryState {
 
   /** Is generating a commit message? */
   readonly isGeneratingCommitMessage: boolean
+
+  /** Controller used to cancel an in-flight commit message generation. */
+  readonly commitMessageGenerationAbortController: AbortController | null
 
   /** Commit being amended, or null if none. */
   readonly commitToAmend: Commit | null
@@ -1166,10 +1188,41 @@ export interface IMultiCommitOperationState {
   readonly copilotResolutions: ReadonlyArray<IFileResolution> | null
 
   /**
+   * Conflicted files Copilot did not resolve, with the reason each was skipped
+   * (too large, unreadable, no parseable markers, etc.). Null when Copilot
+   * hasn't been invoked or hasn't yet completed. Surfaced in the result dialog
+   * so the user can resolve these manually before continuing.
+   */
+  readonly copilotSkippedFiles: ReadonlyArray<ICopilotSkippedFile> | null
+
+  /**
    * Progress of the in-flight Copilot conflict resolution request. Null when
    * no resolution is in progress.
    */
   readonly copilotResolutionProgress: IConflictResolutionProgress | null
+
+  /**
+   * Bundled context for rendering the Copilot resolution summary card —
+   * the markdown produced by the model plus the real metadata Desktop uses
+   * to render the branch-flow header and the "For more context" links.
+   * Null when Copilot hasn't been invoked or has not yet completed.
+   */
+  readonly copilotResolutionSummary: ICopilotResolutionSummary | null
+
+  /**
+   * Controller used to cancel the in-flight Copilot conflict resolution. Set
+   * while a resolution is running so the loading dialog's "Stop" button can
+   * actually tear down the underlying SDK turn (rather than just navigating the
+   * UI away). Null when no resolution is in progress.
+   */
+  readonly copilotResolutionAbortController: AbortController | null
+
+  /**
+   * The model display captured at the time Copilot conflict resolution was
+   * started. Shown in the result dialog header so that changing the model
+   * setting mid-operation doesn't confuse the user.
+   */
+  readonly copilotResolutionModel: IConflictResolutionModelDisplay | null
 
   /**
    * The commit id of the tip of the branch user is modifying in the operation.

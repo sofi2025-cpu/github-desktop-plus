@@ -1,8 +1,6 @@
 import * as React from 'react'
-import * as Path from 'path'
 
-import { Branch, BranchType } from '../../models/branch'
-import { WorktreeEntry } from '../../models/worktree'
+import { Branch } from '../../models/branch'
 
 import { assertNever } from '../../lib/fatal-error'
 
@@ -13,6 +11,7 @@ import { TextBox } from '../lib/text-box'
 
 import {
   groupBranches,
+  isLocalOnlyBranch,
   IBranchListItem,
   BranchGroupIdentifier,
 } from './group-branches'
@@ -52,11 +51,6 @@ interface IBranchListProps {
    * See IBranchesState.recentBranches
    */
   readonly recentBranches: ReadonlyArray<Branch>
-
-  /**
-   * All worktrees in the repository.
-   */
-  readonly allWorktrees: ReadonlyArray<WorktreeEntry>
 
   /**
    * The sort order for branch lists in the current user preferences.
@@ -144,6 +138,19 @@ interface IBranchListProps {
 
   /** Optional: Callback for if delete context menu should exist */
   readonly onDeleteBranch?: (branchName: string) => void
+
+  /**
+   * Optional: Callback for if the "delete unused local branches" context menu
+   * should exist. It is only shown when the right-clicked branch is local-only
+   * and the repository has at least three local-only branches.
+   */
+  readonly onDeleteUnusedLocalBranches?: () => void
+
+  /** Optional: Callback to checkout a branch in a new worktree */
+  readonly onCheckoutInNewWorktree?: (branch: Branch) => void
+
+  /** Optional: Callback if option to fetch branches should exist */
+  readonly onPullSingleBranch?: (branchName: string) => void
 }
 
 /** The Branches list component. */
@@ -181,9 +188,9 @@ export class BranchList extends React.Component<IBranchListProps> {
   private get groups() {
     return this.getGroups(
       this.props.defaultBranch,
+      this.props.currentBranch,
       this.props.allBranches,
       this.props.recentBranches,
-      this.props.allWorktrees,
       this.props.branchSortOrder
     )
   }
@@ -234,32 +241,49 @@ export class BranchList extends React.Component<IBranchListProps> {
   ) => {
     event.preventDefault()
 
-    const { onRenameBranch, onDeleteBranch, onSetAsDefaultBranch } = this.props
+    const {
+      onRenameBranch,
+      onDeleteBranch,
+      onDeleteUnusedLocalBranches: onDeleteUnusedLocalBranches,
+      onCheckoutInNewWorktree,
+      onSetAsDefaultBranch,
+      onPullSingleBranch,
+    } = this.props
 
     if (
       onRenameBranch === undefined &&
       onDeleteBranch === undefined &&
-      onSetAsDefaultBranch === undefined
+      onSetAsDefaultBranch === undefined &&
+      onCheckoutInNewWorktree === undefined
     ) {
       return
     }
 
-    const { type, name, nameWithoutRemote } = item.branch
-    const isLocal = type === BranchType.Local
-    const isInUseByOtherWorktree = !!this.inUseByOtherWorktreeName(item)
+    const { branch } = item
+
+    // Only offer "delete unused local branches" when right-clicking a local-only
+    // branch and the repository has at least three local-only branches.
+    const localOnlyBranchCount =
+      this.props.allBranches.filter(isLocalOnlyBranch).length
+    const canDeleteUnusedLocalBranches =
+      onDeleteUnusedLocalBranches !== undefined &&
+      isLocalOnlyBranch(branch) &&
+      localOnlyBranchCount >= 3
 
     const items = generateBranchContextMenuItems({
-      name,
-      nameWithoutRemote,
-      isLocal,
+      branch,
       repoType: this.props.repository.gitHubRepository?.type,
-      isInUseByOtherWorktree,
       onRenameBranch,
       onSetAsDefaultBranch:
-        nameWithoutRemote === this.props.defaultBranch?.name
+        branch.nameWithoutRemote === this.props.defaultBranch?.name
           ? undefined
           : onSetAsDefaultBranch,
       onDeleteBranch,
+      onDeleteUnusedLocalBranches: canDeleteUnusedLocalBranches
+        ? onDeleteUnusedLocalBranches
+        : undefined,
+      onPullSingleBranch,
+      onCheckoutInNewWorktree,
     })
 
     showContextualMenu(items)
@@ -280,20 +304,17 @@ export class BranchList extends React.Component<IBranchListProps> {
   ): JSX.Element | string | null => {
     const { tip, name } = item.branch
 
-    const absoluteDate = formatDate(tip.author.date, {
-      dateStyle: 'full',
-      timeStyle: 'short',
-    })
+    const authorDate = tip.author.date
 
-    const otherWorktreeName = this.inUseByOtherWorktreeName(item)
+    const absoluteDate = authorDate
+      ? formatDate(authorDate, {
+          dateStyle: 'full',
+          timeStyle: 'short',
+        })
+      : null
+
     return (
       <div className="branches-list-item-tooltip list-item-tooltip">
-        {otherWorktreeName && (
-          <div className="label tooltip-warning">
-            This branch cannot be checked out because it is in use by worktree
-            &quot;{otherWorktreeName}&quot;
-          </div>
-        )}
         <div>
           <div className="label">Full Name: </div>
           {name}
@@ -306,17 +327,6 @@ export class BranchList extends React.Component<IBranchListProps> {
         )}
       </div>
     )
-  }
-
-  private inUseByOtherWorktreeName(item: IBranchListItem): string | null {
-    const worktreeName = item.worktreeInUse
-      ? Path.basename(item.worktreeInUse.path)
-      : null
-
-    return worktreeName !== null &&
-      this.props.currentBranch?.name !== item.branch.name
-      ? worktreeName
-      : null
   }
 
   private parseHeader(label: string): BranchGroupIdentifier | null {
@@ -384,16 +394,6 @@ export class BranchList extends React.Component<IBranchListProps> {
   }
 
   private onItemClick = (item: IBranchListItem, source: ClickSource) => {
-    // Don't allow clicking branches that are in use by other worktrees
-    if (item.worktreeInUse !== null) {
-      const currentBranch = this.props.currentBranch
-      const isCurrentBranch =
-        currentBranch !== null && currentBranch.name === item.branch.name
-      if (!isCurrentBranch) {
-        return
-      }
-    }
-
     if (this.props.onItemClick) {
       this.props.onItemClick(item.branch, source)
     }
@@ -403,18 +403,6 @@ export class BranchList extends React.Component<IBranchListProps> {
     selectedItem: IBranchListItem | null,
     source: SelectionSource
   ) => {
-    // Don't allow selecting branches that are in use by other worktrees
-    if (selectedItem?.worktreeInUse !== null) {
-      const currentBranch = this.props.currentBranch
-      const isCurrentBranch =
-        currentBranch !== null &&
-        selectedItem !== null &&
-        currentBranch.name === selectedItem.branch.name
-      if (!isCurrentBranch) {
-        return
-      }
-    }
-
     if (this.props.onSelectionChanged) {
       this.props.onSelectionChanged(
         selectedItem ? selectedItem.branch : null,

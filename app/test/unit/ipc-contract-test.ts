@@ -71,6 +71,7 @@ describe('IPC channel contract', () => {
     'uninstall-windows-cli',
     'open-repository-in-new-window',
     'set-window-title',
+    'set-window-selected-repository',
     'restart-app',
   ] as const
 
@@ -103,6 +104,7 @@ describe('IPC channel contract', () => {
     'request-notifications-permission',
     'update-main-process-config',
     'get-main-process-config',
+    'get-config-migration-result',
   ] as const
 
   describe('RequestChannels', () => {

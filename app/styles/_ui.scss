@@ -54,6 +54,7 @@
 @import 'ui/banners';
 @import 'ui/add-repository';
 @import 'ui/discard-changes';
+@import 'ui/delete-unused-local-branches';
 @import 'ui/filter-list';
 @import 'ui/missing-repository-view';
 @import 'ui/horizontal-rule';
@@ -105,8 +106,10 @@
 @import 'ui/_pull-request-quick-view';
 @import 'ui/discard-changes-retry';
 @import 'ui/_git-email-not-found-warning';
+@import 'ui/_git-hooks-flatpak-warning';
 @import 'ui/_branch-select';
 @import 'ui/_popover-dropdown';
+@import 'ui/copilot-model-picker';
 @import 'ui/_pull-request-files-changed';
 @import 'ui/_pull-request-merge-status';
 @import 'ui/_open-pull-request-header';

@@ -53,10 +53,12 @@ interface IAppearanceProps {
   readonly onShowRecentRepositoriesChanged: (show: boolean) => void
   readonly showWorktrees: boolean
   readonly onShowWorktreesChanged: (show: boolean) => void
-  readonly showWorktreesInSidebar: boolean
-  readonly onShowWorktreesInSidebarChanged: (show: boolean) => void
+  readonly showWorktreesInRepoList: boolean
+  readonly onShowWorktreesInRepoListChanged: (show: boolean) => void
   readonly showCompareTab: boolean
   readonly onShowCompareTabChanged: (show: boolean) => void
+  readonly showConventionalCommitBadges: boolean
+  readonly onShowConventionalCommitBadgesChanged: (show: boolean) => void
   readonly showBranchNameInRepoList: ShowBranchNameInRepoListSetting
   readonly onShowBranchNameInRepoListChanged: (
     value: ShowBranchNameInRepoListSetting
@@ -82,14 +84,15 @@ interface IAppearanceState {
   readonly titleBarStyle: TitleBarStyle
   readonly showRecentRepositories: boolean
   readonly showWorktrees: boolean
-  readonly showWorktreesInSidebar: boolean
+  readonly showWorktreesInRepoList: boolean
   readonly showCompareTab: boolean
+  readonly showConventionalCommitBadges: boolean
 }
 
 function getTitleBarStyleDescription(titleBarStyle: TitleBarStyle): string {
   switch (titleBarStyle) {
     case 'custom':
-      return 'Uses the menu system provided by GitHub Desktop, hiding the default chrome provided by your window manager.'
+      return 'Uses the menu system provided by Desktop Plus, hiding the default chrome provided by your window manager.'
     case 'native':
       return 'Uses the menu system and chrome provided by your window manager.'
     case 'native-without-menu-bar':
@@ -120,8 +123,9 @@ export class Appearance extends React.Component<
       titleBarStyle: props.titleBarStyle,
       showRecentRepositories: props.showRecentRepositories,
       showWorktrees: props.showWorktrees,
-      showWorktreesInSidebar: props.showWorktreesInSidebar,
+      showWorktreesInRepoList: props.showWorktreesInRepoList,
       showCompareTab: props.showCompareTab,
+      showConventionalCommitBadges: props.showConventionalCommitBadges,
     }
 
     if (!usePropTheme) {
@@ -134,15 +138,7 @@ export class Appearance extends React.Component<
   }
 
   public async componentDidUpdate(prevProps: IAppearanceProps) {
-    if (
-      prevProps.selectedTheme === this.props.selectedTheme &&
-      prevProps.selectedTabSize === this.props.selectedTabSize &&
-      prevProps.selectedDiffFontSize === this.props.selectedDiffFontSize &&
-      prevProps.selectedDiffFontFamily === this.props.selectedDiffFontFamily &&
-      prevProps.showWorktrees === this.props.showWorktrees &&
-      prevProps.showWorktreesInSidebar === this.props.showWorktreesInSidebar &&
-      prevProps.showCompareTab === this.props.showCompareTab
-    ) {
+    if (prevProps === this.props) {
       return
     }
 
@@ -164,8 +160,9 @@ export class Appearance extends React.Component<
       selectedDiffFontSize,
       selectedDiffFontFamily,
       showWorktrees: this.props.showWorktrees,
-      showWorktreesInSidebar: this.props.showWorktreesInSidebar,
+      showWorktreesInRepoList: this.props.showWorktreesInRepoList,
       showCompareTab: this.props.showCompareTab,
+      showConventionalCommitBadges: this.props.showConventionalCommitBadges,
     })
 
     if (
@@ -216,6 +213,14 @@ export class Appearance extends React.Component<
     this.props.onShowWorktreesChanged(show)
   }
 
+  private onShowWorktreesInRepoListChanged = (
+    event: React.FormEvent<HTMLInputElement>
+  ) => {
+    const show = event.currentTarget.checked
+    this.setState({ showWorktreesInRepoList: show })
+    this.props.onShowWorktreesInRepoListChanged(show)
+  }
+
   private onShowCompareTabChanged = (
     event: React.FormEvent<HTMLInputElement>
   ) => {
@@ -224,12 +229,12 @@ export class Appearance extends React.Component<
     this.props.onShowCompareTabChanged(show)
   }
 
-  private onShowWorktreesInSidebarChanged = (
+  private onShowConventionalCommitBadgesChanged = (
     event: React.FormEvent<HTMLInputElement>
   ) => {
     const show = event.currentTarget.checked
-    this.setState({ showWorktreesInSidebar: show })
-    this.props.onShowWorktreesInSidebarChanged(show)
+    this.setState({ showConventionalCommitBadges: show })
+    this.props.onShowConventionalCommitBadgesChanged(show)
   }
 
   private onSelectedTabSizeChanged = (
@@ -482,14 +487,15 @@ export class Appearance extends React.Component<
             }
             onChange={this.onShowWorktreesChanged}
           />
+
           <Checkbox
-            label="Show worktrees in repository sidebar"
+            label="Show worktrees in repository list"
             value={
-              this.state.showWorktreesInSidebar
+              this.state.showWorktreesInRepoList
                 ? CheckboxValue.On
                 : CheckboxValue.Off
             }
-            onChange={this.onShowWorktreesInSidebarChanged}
+            onChange={this.onShowWorktreesInRepoListChanged}
           />
         </div>
         <div className="advanced-section">
@@ -501,6 +507,16 @@ export class Appearance extends React.Component<
               this.state.showCompareTab ? CheckboxValue.On : CheckboxValue.Off
             }
             onChange={this.onShowCompareTabChanged}
+          />
+
+          <Checkbox
+            label="Show Conventional Commits prefixes as badges"
+            value={
+              this.state.showConventionalCommitBadges
+                ? CheckboxValue.On
+                : CheckboxValue.Off
+            }
+            onChange={this.onShowConventionalCommitBadgesChanged}
           />
         </div>
       </>

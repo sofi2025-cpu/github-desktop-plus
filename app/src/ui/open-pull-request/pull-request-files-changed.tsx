@@ -50,6 +50,9 @@ interface IPullRequestFilesChangedProps {
   /** Whether we should display the diff minimap. */
   readonly showDiffMinimap: boolean
 
+  /** Whether text diff lines should wrap within the viewport. */
+  readonly wrapDiffLines: boolean
+
   /** Whether we should hide whitespace in diff. */
   readonly hideWhitespaceInDiff: boolean
 
@@ -121,6 +124,10 @@ export class PullRequestFilesChanged extends React.Component<
     return this.props.dispatcher.onShowDiffMinimapChanged(showDiffMinimap)
   }
 
+  private onWrapDiffLinesChanged = (wrapDiffLines: boolean) => {
+    return this.props.dispatcher.onWrapDiffLinesChanged(wrapDiffLines)
+  }
+
   private onDiffOptionsOpened = () => {
     this.props.dispatcher.incrementMetric('diffOptionsViewedCount')
   }
@@ -151,6 +158,8 @@ export class PullRequestFilesChanged extends React.Component<
         return 'View on Bitbucket'
       case 'gitlab':
         return 'View on GitLab'
+      case 'codeberg':
+        return 'View on Codeberg'
       default:
         assertNever(
           gitHubRepository.type,
@@ -291,6 +300,8 @@ export class PullRequestFilesChanged extends React.Component<
           onShowSideBySideDiffChanged={this.onShowSideBySideDiffChanged}
           showDiffMinimap={showDiffMinimap}
           onShowDiffMinimapChanged={this.onShowDiffMinimapChanged}
+          wrapDiffLines={this.props.wrapDiffLines}
+          onWrapDiffLinesChanged={this.onWrapDiffLinesChanged}
           onDiffOptionsOpened={this.onDiffOptionsOpened}
         />
       </div>
@@ -342,6 +353,7 @@ export class PullRequestFilesChanged extends React.Component<
         hideWhitespaceInDiff={hideWhitespaceInDiff}
         showSideBySideDiff={showSideBySideDiff}
         showDiffMinimap={this.props.showDiffMinimap}
+        wrapDiffLines={this.props.wrapDiffLines}
         showDiffCheckMarks={false}
         onOpenBinaryFile={this.onOpenBinaryFile}
         onChangeImageDiffType={this.onChangeImageDiffType}

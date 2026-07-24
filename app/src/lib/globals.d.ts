@@ -23,6 +23,12 @@ declare const __OAUTH_CLIENT_ID_GITLAB__: string | undefined
 /** The OAuth secret the app should use for GitLab */
 declare const __OAUTH_SECRET_GITLAB__: string | undefined
 
+/** The OAuth client id the app should use for Codeberg */
+declare const __OAUTH_CLIENT_ID_CODEBERG__: string | undefined
+
+/** The OAuth secret the app should use for Codeberg */
+declare const __OAUTH_SECRET_CODEBERG__: string | undefined
+
 /** Is the app being built to run on Darwin? */
 declare const __DARWIN__: boolean
 
@@ -64,6 +70,12 @@ declare const __RELEASE_CHANNEL__:
 
 /** The URL for Squirrel's updates. */
 declare const __UPDATES_URL__: string
+
+/** The URL for fatal exception reports. */
+declare const __ERROR_REPORTING_ENDPOINT__: string | undefined
+
+/** The URL for non-fatal exception reports. */
+declare const __NON_FATAL_ERROR_REPORTING_ENDPOINT__: string | undefined
 
 /**
  * The currently executing process kind, this is specific to desktop

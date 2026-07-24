@@ -217,6 +217,12 @@ interface ICommitListProps {
 
   readonly preferAbsoluteDates: boolean
 
+  /**
+   * Whether to render recognised Conventional Commits prefixes as colored
+   * badges in the commit summary.
+   */
+  readonly showConventionalCommitBadges: boolean
+
   /** This will make the list semantics friendly to screen reader users in browse mode. */
   readonly isInformationalView?: boolean
 
@@ -375,6 +381,7 @@ export class CommitList extends React.Component<
         accounts={this.props.accounts}
         dragSourceBranch={this.props.dragSourceBranch}
         preferAbsoluteDates={this.props.preferAbsoluteDates}
+        showConventionalCommitBadges={this.props.showConventionalCommitBadges}
       />
     )
   }
@@ -730,6 +737,8 @@ export class CommitList extends React.Component<
             tagsToPush: this.props.tagsToPush,
             shasToHighlight: this.props.shasToHighlight,
             preferAbsoluteDates: this.props.preferAbsoluteDates,
+            showConventionalCommitBadges:
+              this.props.showConventionalCommitBadges,
             additionalInvalidationProps: this.props.additionalInvalidationProps,
           }}
           setScrollTop={this.props.compareListScrollTop}
@@ -855,14 +864,12 @@ export class CommitList extends React.Component<
 
     const canBeUndone = this.props.canUndoCommits === true && isHeadCommit
     const canBeAmended = this.props.canAmendCommits === true && isHeadCommit
-    // The user can reset to any commit up to the first non-local one (included).
     // They cannot reset to the most recent commit... because they're already
     // in it.
-    const isResettableCommit =
-      actualRow > 0 && actualRow <= this.props.localCommitSHAs.length
+    const isResettableCommit = !isHeadCommit
     const canBeResetTo =
       this.props.canResetToCommits === true && isResettableCommit
-    const canBeCheckedOut = actualRow > 0 //Cannot checkout the current commit
+    const canBeCheckedOut = !isHeadCommit //Cannot checkout the current commit
 
     const gitHubRepository = this.props.repository?.gitHubRepository
 
@@ -993,6 +1000,8 @@ export class CommitList extends React.Component<
         return 'View on Bitbucket'
       case 'gitlab':
         return 'View on GitLab'
+      case 'codeberg':
+        return 'View on Codeberg'
       default:
         assertNever(
           gitHubRepository.type,

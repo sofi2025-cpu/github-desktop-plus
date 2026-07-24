@@ -1,5 +1,6 @@
 import {
   getBitbucketAPIEndpoint,
+  getCodebergAPIEndpoint,
   getDotComAPIEndpoint,
   getGitLabAPIEndpoint,
   getHTMLURL,
@@ -17,7 +18,12 @@ export function accountEquals(x: Account, y: Account) {
   return x.endpoint === y.endpoint && x.id === y.id && x.login === y.login
 }
 
-export type AccountAPIType = 'dotcom' | 'enterprise' | 'bitbucket' | 'gitlab'
+export type AccountAPIType =
+  | 'dotcom'
+  | 'enterprise'
+  | 'bitbucket'
+  | 'gitlab'
+  | 'codeberg'
 
 export enum UnknownLogin {
   InitialAuthFetch,
@@ -65,6 +71,7 @@ export class Account {
    * @param copilotEndpoint The endpoint for the Copilot API
    * @param isCopilotDesktopEnabled Whether Copilot for Desktop is enabled for this account
    * @param features The Desktop-specific features available to this account
+   * @param copilotLicenseType The user's Copilot license type
    */
   public constructor(
     public readonly login: string,
@@ -79,7 +86,8 @@ export class Account {
     public readonly plan?: string,
     public readonly copilotEndpoint?: string,
     public readonly isCopilotDesktopEnabled?: boolean,
-    public readonly features?: ReadonlyArray<string>
+    public readonly features?: ReadonlyArray<string>,
+    public readonly copilotLicenseType?: string
   ) {}
 
   public withToken(token: string): Account {
@@ -118,7 +126,8 @@ export class Account {
       this.plan,
       this.copilotEndpoint,
       this.isCopilotDesktopEnabled,
-      this.features
+      this.features,
+      this.copilotLicenseType
     )
   }
 
@@ -156,6 +165,8 @@ export class Account {
       return 'bitbucket'
     } else if (this.endpoint === getGitLabAPIEndpoint()) {
       return 'gitlab'
+    } else if (this.endpoint === getCodebergAPIEndpoint()) {
+      return 'codeberg'
     } else {
       return 'enterprise'
     }

@@ -10,10 +10,16 @@ const devClientIdGitLab =
   'a6b3b9c8fb8a782d3a0284ac80378912e44272c4a41465b5b9f5a14a79d5526a'
 const devClientSecretGitLab =
   'gloas-f3ace006b2563128e25b407fb4eef3583ca2220fc3392ca5311f3cc62076df9c'
+const devClientIdCodeberg = 'eec16d05-93bd-43ec-8e29-a7e5dc677c78'
+const devClientSecretCodeberg =
+  'gto_ehmm7ppeie2ptokgtj4stzo3k5wijcueilpmlgacvglhcpry56bq'
 
 const channel = getChannel()
 
 const s = JSON.stringify
+
+const optionalStringReplacement = (value: string | undefined) =>
+  value === undefined || value.length === 0 ? 'undefined' : s(value)
 
 export function getReplacements() {
   const isDevBuild = channel === 'development'
@@ -36,6 +42,13 @@ export function getReplacements() {
     __OAUTH_SECRET_GITLAB__: s(
       process.env.DESKTOP_OAUTH_CLIENT_SECRET_GITLAB || devClientSecretGitLab
     ),
+    __OAUTH_CLIENT_ID_CODEBERG__: s(
+      process.env.DESKTOP_OAUTH_CLIENT_ID_CODEBERG || devClientIdCodeberg
+    ),
+    __OAUTH_SECRET_CODEBERG__: s(
+      process.env.DESKTOP_OAUTH_CLIENT_SECRET_CODEBERG ||
+        devClientSecretCodeberg
+    ),
     __DARWIN__: process.platform === 'darwin',
     __WIN32__: process.platform === 'win32',
     __LINUX__: process.platform === 'linux',
@@ -47,6 +60,12 @@ export function getReplacements() {
     __DEV_SECRETS__: isDevBuild || !process.env.DESKTOP_OAUTH_CLIENT_SECRET,
     __RELEASE_CHANNEL__: s(channel),
     __UPDATES_URL__: s(process.env.DESKTOP_E2E_UPDATES_URL ?? getUpdatesURL()),
+    __ERROR_REPORTING_ENDPOINT__: optionalStringReplacement(
+      process.env.DESKTOP_ERROR_REPORTING_ENDPOINT
+    ),
+    __NON_FATAL_ERROR_REPORTING_ENDPOINT__: optionalStringReplacement(
+      process.env.DESKTOP_NON_FATAL_ERROR_REPORTING_ENDPOINT
+    ),
     __SHA__: s(getSHA()),
     'process.platform': s(process.platform),
     'process.env.NODE_ENV': s(process.env.NODE_ENV || 'development'),

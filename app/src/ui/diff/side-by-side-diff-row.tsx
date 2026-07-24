@@ -448,16 +448,18 @@ export class SideBySideDiffRow extends React.Component<
       <div className="content">
         <div className="prefix">&nbsp;&nbsp;{prefix}&nbsp;&nbsp;</div>
         <div className="content-wrapper">
-          {/* Copy to clipboard will ignore empty "lines" unless we add br */}
-          {data.content.length === 0 && <br />}
+          <div className="content-text">
+            {/* Copy to clipboard will ignore empty "lines" unless we add br */}
+            {data.content.length === 0 && <br />}
 
-          {syntaxHighlightLine(data.content, data.tokens)}
-          {data.noNewLineIndicator && (
-            <Octicon
-              symbol={narrowNoNewlineSymbol}
-              title="No newline at end of file"
-            />
-          )}
+            {syntaxHighlightLine(data.content, data.tokens)}
+            {data.noNewLineIndicator && (
+              <span className="no-newline-indicator">
+                <Octicon symbol={narrowNoNewlineSymbol} />
+                <span> No newline at end of file</span>
+              </span>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -944,7 +946,7 @@ export class SideBySideDiffRow extends React.Component<
   }
 
   private onMouseDownLineNumber = (evt: React.MouseEvent) => {
-    if (evt.buttons === 2) {
+    if (evt.button !== 0) {
       return
     }
 

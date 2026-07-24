@@ -83,6 +83,20 @@ export class Git extends React.Component<IGitProps> {
   private renderHooksSettings() {
     return (
       <>
+        {__FLATPAK__ && (
+          <div className="git-hooks-flatpak-warning">
+            <span className="warning-icon">⚠️</span>
+            You're running the Flatpak version. Git hooks run inside the Flatpak
+            sandbox and cannot access programs installed on your system (such as
+            version managers, linters, or other tools your hooks rely on). If
+            your hooks depend on such programs, install a native package
+            instead. See the{' '}
+            <LinkButton uri="https://github.com/desktop-plus/desktop-plus#download-and-installation-">
+              installation instructions
+            </LinkButton>
+            .
+          </div>
+        )}
         <Checkbox
           label="Load Git hook environment variables from shell"
           ariaDescribedBy="git-hooks-env-description"
@@ -92,11 +106,11 @@ export class Git extends React.Component<IGitProps> {
           onChange={this.onEnableGitHookEnvChanged}
         />
         <p id="git-hooks-env-description" className="settings-description">
-          When enabled, GitHub Desktop will attempt to load environment
-          variables from your shell when executing Git hooks. This is useful if
-          your Git hooks depend on environment variables set in your shell
-          configuration files, a common practice for version managers such as
-          nvm, rbenv, asdf, etc.
+          When enabled, Desktop Plus will attempt to load environment variables
+          from your shell when executing Git hooks. This is useful if your Git
+          hooks depend on environment variables set in your shell configuration
+          files, a common practice for version managers such as nvm, rbenv,
+          asdf, etc.
         </p>
 
         {this.props.enableGitHookEnv && __WIN32__ && (

@@ -11,6 +11,7 @@ import {
   WebContents,
 } from 'electron'
 import * as Fs from 'fs'
+import * as Path from 'path'
 
 import { AppWindow } from './app-window'
 import { buildDefaultMenu, getAllMenuItems } from './menu'
@@ -60,9 +61,24 @@ import {
 } from './notifications'
 import parseCommandLineArgs from 'minimist'
 import { CLIAction } from '../lib/cli-action'
+import {
+  getConfigMigrationResult,
+  migrateLegacyConfigDir,
+} from './migrate-config-dir'
+
+// Migrate the config directory from a previous app name (if needed) before
+// anything touches the userData directory.
+migrateLegacyConfigDir()
 
 app.setAppLogsPath()
 enableSourceMaps()
+
+// On Linux, enterprise/self-signed root CAs installed system-wide aren't honored
+// and trigger the "Untrusted server" dialog. Make Chromium also consult the system trust
+// store, aligning it with Git (expands the trust set, doesn't replace it).
+if (__LINUX__) {
+  app.commandLine.appendSwitch('use-system-ca')
+}
 
 const windows = new Map<number, AppWindow>()
 
@@ -126,7 +142,7 @@ if (__DARWIN__) {
 // On Windows, in order to get notifications properly working for dev builds,
 // we'll want to set the right App User Model ID from production builds.
 if (__WIN32__ && __DEV__) {
-  app.setAppUserModelId('com.squirrel.GitHubDesktopPlus.GitHubDesktopPlus')
+  app.setAppUserModelId('com.squirrel.DesktopPlus.DesktopPlus')
 }
 
 app.on('window-all-closed', () => {
@@ -189,7 +205,34 @@ function getTargetWindow() {
     return focusedAppWindow
   }
 
-  return getAppWindows()[0] ?? null
+  return getAppWindows().at(0) ?? null
+}
+
+function normalizeRepositoryPath(path: string) {
+  // Strip trailing separator
+  const normalized = Path.normalize(path).replace(/[\\/]+$/, '')
+  // Windows paths are case-insensitive
+  return __WIN32__ ? normalized.toLowerCase() : normalized
+}
+
+function findWindowForRepositoryPath(rawTargetPath: string): AppWindow | null {
+  const targetPath = normalizeRepositoryPath(rawTargetPath)
+  const allWindows = getAppWindows().filter(w => w.hasSelectedRepositoryPath())
+  const windowsSortedFromMostSpecificToLeast = allWindows.toSorted(
+    (a, b) => b.selectedRepositoryPath.length - a.selectedRepositoryPath.length
+  )
+
+  for (const window of windowsSortedFromMostSpecificToLeast) {
+    const candidatePath = normalizeRepositoryPath(window.selectedRepositoryPath)
+    if (
+      targetPath === candidatePath ||
+      targetPath.startsWith(candidatePath + Path.sep)
+    ) {
+      return window
+    }
+  }
+
+  return null // fallback to getLoadedTargetWindow()
 }
 
 function getLoadedTargetWindow() {
@@ -250,22 +293,23 @@ if (!handlingSquirrelEvent) {
   const gotSingleInstanceLock = app.requestSingleInstanceLock()
   isDuplicateInstance = !gotSingleInstanceLock
 
-  app.on('second-instance', (event, args, workingDirectory) => {
-    // Someone tried to run a second instance, we should focus our window.
-    const targetWindow = getTargetWindow()
-    if (targetWindow) {
-      if (targetWindow.isMinimized()) {
-        targetWindow.restore()
-      }
-
-      if (!targetWindow.isVisible()) {
-        targetWindow.show()
-      }
-
-      targetWindow.focus()
+  app.on('second-instance', async (event, args, workingDirectory) => {
+    const handledAction = await handleCommandLineArguments(args)
+    if (handledAction) {
+      return
     }
+    const mainWindow = getTargetWindow()
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
 
-    handleCommandLineArguments(args)
+      if (!mainWindow.isVisible()) {
+        mainWindow.show()
+      }
+
+      mainWindow.focus()
+    }
   })
 
   if (isDuplicateInstance) {
@@ -311,7 +355,7 @@ if (__DARWIN__) {
   })
 }
 
-async function handleCommandLineArguments(argv: string[]) {
+async function handleCommandLineArguments(argv: string[]): Promise<boolean> {
   const args = parseCommandLineArgs(argv, {
     boolean: ['protocol-launcher'],
   })
@@ -347,10 +391,10 @@ async function handleCommandLineArguments(argv: string[]) {
 
     if (matchingUrl) {
       handleAppURL(matchingUrl)
-      return
+      return true
     } else if (__WIN32__) {
       log.error(`Encountered --protocol-launcher without app url`)
-      return
+      return false
     }
     // If --protocol-launcher is present we always want to bail and not
     // risk a smuggled cli switch
@@ -358,6 +402,7 @@ async function handleCommandLineArguments(argv: string[]) {
 
   if (typeof args['cli-open'] === 'string') {
     handleCLIAction({ kind: 'open-repository', path: args['cli-open'] })
+    return true
   } else if (typeof args['cli-clone'] === 'string') {
     handleCLIAction({
       kind: 'clone-url',
@@ -365,12 +410,22 @@ async function handleCommandLineArguments(argv: string[]) {
       branch:
         typeof args['cli-branch'] === 'string' ? args['cli-branch'] : undefined,
     })
+    return true
   }
 
-  return
+  return false
 }
 
 function handleCLIAction(action: CLIAction) {
+  if (action.kind === 'open-repository') {
+    const existingWindow = findWindowForRepositoryPath(action.path)
+    if (existingWindow !== null) {
+      existingWindow.revealAndFocus()
+      existingWindow.sendCLIAction(action)
+      return
+    }
+  }
+
   onDidLoad(window => {
     // This manual focus call _shouldn't_ be necessary, but is for Chrome on
     // macOS. See https://github.com/desktop/desktop/issues/973.
@@ -623,6 +678,10 @@ app.on('ready', () => {
     getAppWindowFromWebContents(event.sender)?.setTitle(title)
   )
 
+  ipcMain.on('set-window-selected-repository', (event, path: string | null) =>
+    getAppWindowFromWebContents(event.sender)?.setSelectedRepositoryPath(path)
+  )
+
   ipcMain.on('minimize-window', event =>
     getAppWindowFromWebContents(event.sender)?.minimizeWindow()
   )
@@ -836,6 +895,10 @@ app.on('ready', () => {
   ipcMain.handle('save-guid', (_, guid) => saveGUIDFile(guid))
 
   ipcMain.handle('get-main-process-config', async () => readMainProcessConfig())
+
+  ipcMain.handle('get-config-migration-result', async () =>
+    getConfigMigrationResult()
+  )
 
   ipcMain.handle(
     'update-main-process-config',

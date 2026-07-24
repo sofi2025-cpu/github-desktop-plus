@@ -1,48 +1,9 @@
-import { git } from './core'
-import { Repository } from '../../models/repository'
 import * as Path from 'path'
-import * as Fs from 'fs'
+import type { Repository } from '../../models/repository'
 import type { WorktreeEntry, WorktreeType } from '../../models/worktree'
-import { normalizePath } from '../helpers/path'
-
-/**
- * Get the set of canonical branch refs (e.g. `refs/heads/feature`)
- * checked out in any worktree (main or linked).
- */
-export async function getWorktreeCheckedOutBranches(
-  repository: Repository
-): Promise<ReadonlySet<string>> {
-  const result = await git(
-    ['worktree', 'list', '--porcelain', '-z'],
-    repository.path,
-    'getWorktreeCheckedOutBranches'
-  )
-
-  const branches = new Set<string>()
-
-  // With -z, lines are NUL-terminated and blocks are separated by
-  // double NUL (i.e. an empty string between two NUL terminators).
-  const blocks = result.stdout.split('\0\0')
-
-  for (const block of blocks) {
-    for (const line of block.split('\0')) {
-      if (line.startsWith('branch ')) {
-        branches.add(line.substring('branch '.length))
-      }
-    }
-  }
-
-  return branches
-}
-
-function getDotGitPath(repositoryPath: string): string {
-  return Path.join(repositoryPath, '.git')
-}
-
-export interface IWorktreePathInfo {
-  readonly isLinkedWorktree: boolean
-  readonly mainWorktreePath: string | null
-}
+import { git } from './core'
+import { directoryExists } from '../directory-exists'
+import { readFile } from 'fs/promises'
 
 export function parseWorktreePorcelainOutput(
   stdout: string
@@ -51,11 +12,13 @@ export function parseWorktreePorcelainOutput(
     return []
   }
 
-  const blocks = stdout.trim().split('\n\n')
+  // With -z, worktree blocks are separated by double NUL and fields within
+  // a block are separated by single NUL
+  const blocks = stdout.replace(/\0$/, '').split('\0\0')
   const entries: WorktreeEntry[] = []
 
   for (let i = 0; i < blocks.length; i++) {
-    const lines = blocks[i].split('\n')
+    const lines = blocks[i].split('\0')
     let path = ''
     let head = ''
     let branch: string | null = null
@@ -65,7 +28,12 @@ export function parseWorktreePorcelainOutput(
 
     for (const line of lines) {
       if (line.startsWith('worktree ')) {
-        path = line.substring('worktree '.length)
+        // Git for Windows will output paths using forward slashes, i.e.
+        // c:/Users/niik/... but repositories added in Desktop always pass
+        // through getRepositoryType which uses path.resolve to deduce the
+        // absolute top level directory and that will normalize paths as well
+        // so by normalizing here we can be more confident about comparing paths
+        path = Path.normalize(line.substring('worktree '.length))
       } else if (line.startsWith('HEAD ')) {
         head = line.substring('HEAD '.length)
       } else if (line.startsWith('branch ')) {
@@ -87,32 +55,76 @@ export function parseWorktreePorcelainOutput(
 }
 
 export async function listWorktrees(
-  repository: Repository
+  repositoryOrPath: Repository | string
 ): Promise<ReadonlyArray<WorktreeEntry>> {
   const result = await git(
-    ['worktree', 'list', '--porcelain'],
-    repository.path,
+    ['worktree', 'list', '--porcelain', '-z'],
+    typeof repositoryOrPath === 'string'
+      ? repositoryOrPath
+      : repositoryOrPath.path,
     'listWorktrees'
   )
 
   return parseWorktreePorcelainOutput(result.stdout)
 }
 
+export async function listWorktreesFromGitDir(
+  gitDir: string
+): Promise<ReadonlyArray<WorktreeEntry>> {
+  const result = await git(
+    ['--git-dir', gitDir, 'worktree', 'list', '--porcelain', '-z'],
+    gitDir,
+    'listWorktreesFromGitDir'
+  )
+
+  return parseWorktreePorcelainOutput(result.stdout)
+}
+
+export async function listWorktreesFromGitDirFallback(
+  gitDir: string
+): Promise<ReadonlyArray<WorktreeEntry>> {
+  const commonDir = await resolveCommonGitDir(gitDir)
+  const mainWorktreePath = Path.dirname(commonDir)
+
+  if (!(await directoryExists(mainWorktreePath))) {
+    return []
+  }
+  try {
+    return listWorktrees(mainWorktreePath)
+  } catch {
+    return []
+  }
+}
+
+async function resolveCommonGitDir(gitDir: string): Promise<string> {
+  if (Path.basename(Path.dirname(gitDir)) !== 'worktrees') {
+    return gitDir
+  }
+
+  // Prefer the `commondir` file, but fall back to the conventional layout (two
+  // levels up) when it's unreadable, e.g. `git worktree remove` deleted the
+  // worktree's admin files too.
+  const conventionalCommonDir = Path.dirname(Path.dirname(gitDir))
+  try {
+    const fileContent = await readFile(Path.join(gitDir, 'commondir'), 'utf8')
+    const path = fileContent.replace(/\r?\n$/, '')
+    return path ? Path.resolve(gitDir, path) : conventionalCommonDir
+  } catch {
+    return conventionalCommonDir
+  }
+}
+
 export async function addWorktree(
   repository: Repository,
   path: string,
   options: {
-    readonly branch?: string
+    /** Branch name used with -b (create new branch) */
     readonly createBranch?: string
-    readonly detach?: boolean
+    /** Commit-ish to check out (branch name, ref, or SHA) */
     readonly commitish?: string
   } = {}
 ): Promise<void> {
   const args = ['worktree', 'add']
-
-  if (options.detach) {
-    args.push('--detach')
-  }
 
   if (options.createBranch) {
     args.push('-b', options.createBranch)
@@ -120,9 +132,7 @@ export async function addWorktree(
 
   args.push(path)
 
-  if (options.branch) {
-    args.push(options.branch)
-  } else if (options.commitish) {
+  if (options.commitish) {
     args.push(options.commitish)
   }
 
@@ -130,15 +140,17 @@ export async function addWorktree(
 }
 
 export async function removeWorktree(
-  repository: Repository,
-  path: string
+  repositoryPath: string,
+  worktreePath: string,
+  force: boolean = false
 ): Promise<void> {
-  const args = ['worktree', 'remove', '--force', path]
-  await git(args, repository.path, 'removeWorktree')
-}
+  const args = ['worktree', 'remove']
+  if (force) {
+    args.push('--force')
+  }
+  args.push(worktreePath)
 
-export async function pruneWorktrees(repository: Repository): Promise<void> {
-  await git(['worktree', 'prune'], repository.path, 'pruneWorktrees')
+  await git(args, repositoryPath, 'removeWorktree')
 }
 
 export async function moveWorktree(
@@ -151,69 +163,4 @@ export async function moveWorktree(
     repository.path,
     'moveWorktree'
   )
-}
-
-export async function isLinkedWorktree(
-  repository: Repository
-): Promise<boolean> {
-  const worktrees = await listWorktrees(repository)
-  const repoPath = normalizePath(repository.path)
-
-  return worktrees.some(
-    wt => wt.type === 'linked' && normalizePath(wt.path) === repoPath
-  )
-}
-
-export async function getMainWorktreePath(
-  repository: Repository
-): Promise<string | null> {
-  const worktrees = await listWorktrees(repository)
-  const main = worktrees.find(wt => wt.type === 'main')
-  return main?.path ?? null
-}
-
-export function getWorktreePathInfoSync(
-  repositoryPath: string
-): IWorktreePathInfo | null {
-  try {
-    const dotGit = getDotGitPath(repositoryPath)
-    // eslint-disable-next-line no-sync
-    const stats = Fs.statSync(dotGit)
-
-    if (stats.isDirectory()) {
-      return { isLinkedWorktree: false, mainWorktreePath: repositoryPath }
-    }
-
-    if (!stats.isFile()) {
-      return null
-    }
-
-    // eslint-disable-next-line no-sync
-    const contents = Fs.readFileSync(dotGit, 'utf8').trim()
-    if (!contents.startsWith('gitdir: ')) {
-      return null
-    }
-
-    const gitDirPath = Path.resolve(
-      repositoryPath,
-      contents.substring('gitdir: '.length)
-    )
-
-    // eslint-disable-next-line no-sync
-    const commondir = Fs.readFileSync(
-      Path.join(gitDirPath, 'commondir'),
-      'utf8'
-    ).trim()
-    if (commondir.length === 0) {
-      return null
-    }
-
-    const commonGitDir = Path.resolve(gitDirPath, commondir)
-    return {
-      isLinkedWorktree: true,
-      mainWorktreePath: Path.dirname(commonGitDir),
-    }
-  } catch {
-    return null
-  }
 }

@@ -57,8 +57,10 @@ interface IRepositoryViewProps {
   readonly hideWhitespaceInHistoryDiff: boolean
   readonly showSideBySideDiff: boolean
   readonly showDiffMinimap: boolean
+  readonly wrapDiffLines: boolean
   readonly showDiffCheckMarks: boolean
   readonly preferAbsoluteDates: boolean
+  readonly showConventionalCommitBadges: boolean
   readonly askForConfirmationOnDiscardChanges: boolean
   readonly askForConfirmationOnCommitFilteredChanges: boolean
   readonly askForConfirmationOnDiscardStash: boolean
@@ -69,6 +71,12 @@ interface IRepositoryViewProps {
   readonly showCommitAuthorInfo: boolean
   readonly accounts: ReadonlyArray<Account>
   readonly shouldShowGenerateCommitMessageCallOut: boolean
+
+  /**
+   * Whether the user has disabled Copilot commit message generation by
+   * selecting "None" as the model. When true, the Copilot button is hidden.
+   */
+  readonly commitMessageGenerationDisabled: boolean
 
   /**
    * A value indicating whether or not the application is currently presenting
@@ -361,6 +369,9 @@ export class RepositoryView extends React.Component<
         shouldShowGenerateCommitMessageCallOut={
           this.props.shouldShowGenerateCommitMessageCallOut
         }
+        commitMessageGenerationDisabled={
+          this.props.commitMessageGenerationDisabled
+        }
         commitToAmend={this.props.state.commitToAmend}
         isPushPullFetchInProgress={this.props.state.isPushPullFetchInProgress}
         focusCommitMessage={this.props.focusCommitMessage}
@@ -450,6 +461,7 @@ export class RepositoryView extends React.Component<
         tagsToPush={tagsToPush}
         isMultiCommitOperationInProgress={mcos !== null}
         preferAbsoluteDates={this.props.preferAbsoluteDates}
+        showConventionalCommitBadges={this.props.showConventionalCommitBadges}
         askForConfirmationOnCheckoutCommit={
           this.props.askForConfirmationOnCheckoutCommit
         }
@@ -512,6 +524,7 @@ export class RepositoryView extends React.Component<
         }
         accounts={this.props.accounts}
         preferAbsoluteDates={this.props.preferAbsoluteDates}
+        showConventionalCommitBadges={this.props.showConventionalCommitBadges}
       />
     )
   }
@@ -596,6 +609,7 @@ export class RepositoryView extends React.Component<
           }
           showSideBySideDiff={this.props.showSideBySideDiff}
           showDiffMinimap={this.props.showDiffMinimap}
+          wrapDiffLines={this.props.wrapDiffLines}
           onOpenBinaryFile={this.onOpenBinaryFile}
           onOpenSubmodule={this.onOpenSubmodule}
           onChangeImageDiffType={this.onChangeImageDiffType}
@@ -652,6 +666,7 @@ export class RepositoryView extends React.Component<
         hideWhitespaceInDiff={this.props.hideWhitespaceInHistoryDiff}
         showSideBySideDiff={this.props.showSideBySideDiff}
         showDiffMinimap={this.props.showDiffMinimap}
+        wrapDiffLines={this.props.wrapDiffLines}
         onOpenBinaryFile={this.onOpenBinaryFile}
         onOpenSubmodule={this.onOpenSubmodule}
         onChangeImageDiffType={this.onChangeImageDiffType}
@@ -747,6 +762,7 @@ export class RepositoryView extends React.Component<
           hideWhitespaceInDiff={this.props.hideWhitespaceInChangesDiff}
           showSideBySideDiff={this.props.showSideBySideDiff}
           showDiffMinimap={this.props.showDiffMinimap}
+          wrapDiffLines={this.props.wrapDiffLines}
           showDiffCheckMarks={this.props.showDiffCheckMarks}
           onOpenBinaryFile={this.onOpenBinaryFile}
           onOpenSubmodule={this.onOpenSubmodule}
