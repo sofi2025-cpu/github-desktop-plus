@@ -28,6 +28,7 @@ import {
   getGitHubHtmlUrl,
   getNonForkGitHubRepository,
   getNonGitHubUrl,
+  getUpdateBranchStrategy,
   isRepositoryWithGitHubRepository,
 } from '../models/repository'
 import { Branch } from '../models/branch'
@@ -44,7 +45,7 @@ import { CloningRepository } from '../models/cloning-repository'
 
 import { TitleBar, ZoomInfo, FullScreenInfo } from './window'
 
-import { RepositoriesList } from './repositories-list'
+import { RepositoriesList, getKnownGroupNames } from './repositories-list'
 import { RepositoryView } from './repository'
 import { RenameBranch } from './rename-branch'
 import {
@@ -137,6 +138,7 @@ import { WorkflowPushRejectedDialog } from './workflow-push-rejected/workflow-pu
 import { SAMLReauthRequiredDialog } from './saml-reauth-required/saml-reauth-required'
 import { CreateForkDialog } from './forks/create-fork-dialog'
 import { findContributionTargetDefaultBranch } from '../lib/branch'
+import { UpdateBranchStrategy } from '../lib/update-branch-strategy'
 import {
   GitHubRepository,
   hasWritePermission,
@@ -158,7 +160,8 @@ import { CommitDragElement } from './drag-elements/commit-drag-element'
 import classNames from 'classnames'
 import { MoveToApplicationsFolder } from './move-to-applications-folder'
 import { ChangeRepositoryAlias } from './change-repository-alias/change-repository-alias-dialog'
-import { ChangeRepositoryGroupName } from './change-repository-group-name/change-repository-group-name-dialog'
+import { CreateRepositoryGroup } from './create-repository-group/create-repository-group-dialog'
+import { DeleteRepositoryGroup } from './delete-repository-group/delete-repository-group-dialog'
 import { ThankYou } from './thank-you'
 import {
   getUserContributions,
@@ -189,7 +192,7 @@ import { generateRepositoryListContextMenu } from './repositories-list/repositor
 import * as ipcRenderer from '../lib/ipc-renderer'
 import { DiscardChangesRetryDialog } from './discard-changes/discard-changes-retry-dialog'
 import { PullRequestReview } from './notifications/pull-request-review'
-import { getRepositoryType } from '../lib/git'
+import { getCommitsBetweenCommits, getRepositoryType } from '../lib/git'
 import { SSHUserPassword } from './ssh/ssh-user-password'
 import { showContextualMenu } from '../lib/menu-item'
 import { UnreachableCommitsDialog } from './history/unreachable-commits-dialog'
@@ -241,6 +244,7 @@ import { AddWorktreeDialog } from './worktrees/add-worktree-dialog'
 import { RenameWorktreeDialog } from './worktrees/rename-worktree-dialog'
 import { DeleteWorktreeDialog } from './worktrees/delete-worktree-dialog'
 import { DeleteWorktreeFailedDialog } from './worktrees/delete-worktree-failed-dialog'
+import { PullBranchDeletedDialog } from './pull-branch-deleted/pull-branch-deleted-dialog'
 import { ManageRemotesDialog } from './manage-remotes/manage-remotes-dialog'
 import { AddRemoteDialog } from './manage-remotes/add-remote-dialog'
 import { getEditorOverrideLabel } from '../models/editor-override'
@@ -699,6 +703,11 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     await this.props.dispatcher.fetch(repository, FetchType.UserInitiatedTask)
 
+    if (getUpdateBranchStrategy(repository) === UpdateBranchStrategy.Rebase) {
+      await this.rebaseOntoContributionTargetBranch(repository)
+      return
+    }
+
     this.props.dispatcher.initializeMergeOperation(
       repository,
       false,
@@ -710,6 +719,42 @@ export class App extends React.Component<IAppProps, IAppState> {
       repository,
       contributionTargetDefaultBranch,
       mergeStatus
+    )
+  }
+
+  private async rebaseOntoContributionTargetBranch(repository: Repository) {
+    // Re-read the repo state after the fetch so the force-push warning and the
+    // rebase progress reflect the just-fetched commits on the default branch.
+    const state = this.props.repositoryStateManager.get(repository)
+
+    const contributionTargetDefaultBranch = findContributionTargetDefaultBranch(
+      repository,
+      state.branchesState
+    )
+    if (contributionTargetDefaultBranch === null) {
+      return
+    }
+
+    const { tip } = state.branchesState
+    if (tip.kind !== TipState.Valid) {
+      return
+    }
+
+    const commits = await getCommitsBetweenCommits(
+      repository,
+      contributionTargetDefaultBranch.tip.sha,
+      tip.branch.tip.sha
+    )
+
+    if (commits === null) {
+      return
+    }
+
+    await this.props.dispatcher.startRebase(
+      repository,
+      contributionTargetDefaultBranch,
+      tip.branch,
+      commits
     )
   }
 
@@ -766,7 +811,11 @@ export class App extends React.Component<IAppProps, IAppState> {
         tree: `${htmlURL}/tree/${urlEncodedBranchName}`,
         compare: `${htmlURL}/compare/${baseBranch}...${urlEncodedBranchName}`,
       },
-      codeberg: {
+      forgejo: {
+        tree: `${htmlURL}/src/branch/${urlEncodedBranchName}`,
+        compare: `${htmlURL}/compare/${baseBranch}...${urlEncodedBranchName}`,
+      },
+      gitea: {
         tree: `${htmlURL}/src/branch/${urlEncodedBranchName}`,
         compare: `${htmlURL}/compare/${baseBranch}...${urlEncodedBranchName}`,
       },
@@ -2367,6 +2416,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             repository={popup.repository}
             currentBranch={currentBranch}
             branchToCheckout={branchToCheckout}
+            onCheckedOut={popup.onCheckedOut}
             onDismissed={onPopupDismissedFn}
           />
         )
@@ -2540,11 +2590,23 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
-      case PopupType.ChangeRepositoryGroupName: {
+      case PopupType.CreateRepositoryGroup: {
         return (
-          <ChangeRepositoryGroupName
+          <CreateRepositoryGroup
             dispatcher={this.props.dispatcher}
-            repository={popup.repository}
+            repositories={popup.repositories}
+            preselectedRepositoryIds={popup.preselectedRepositoryIds}
+            editedGroupName={popup.editedGroupName}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
+      case PopupType.DeleteRepositoryGroup: {
+        return (
+          <DeleteRepositoryGroup
+            dispatcher={this.props.dispatcher}
+            groupName={popup.groupName}
+            repositories={popup.repositories}
             onDismissed={onPopupDismissedFn}
           />
         )
@@ -3232,6 +3294,16 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
+      case PopupType.PullBranchDeleted:
+        return (
+          <PullBranchDeletedDialog
+            key="pull-branch-deleted"
+            dispatcher={this.props.dispatcher}
+            repository={popup.repository}
+            branchName={popup.branchName}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
       case PopupType.ManageRemotes:
         return (
           <ManageRemotesDialog
@@ -3853,15 +3925,27 @@ export class App extends React.Component<IAppProps, IAppState> {
       this.props.dispatcher.changeRepositoryAlias(repository, null)
     }
 
-    const onChangeRepositoryGroupName = (repository: Repository) => {
+    const onNewGroupForRepository = (repository: Repository) => {
+      const repositories = this.state.repositories.filter(
+        (r): r is Repository => r instanceof Repository
+      )
+
       this.props.dispatcher.showPopup({
-        type: PopupType.ChangeRepositoryGroupName,
-        repository,
+        type: PopupType.CreateRepositoryGroup,
+        repositories,
+        preselectedRepositoryIds: [repository.id],
       })
     }
 
     const onRemoveRepositoryGroupName = (repository: Repository) => {
       this.props.dispatcher.changeRepositoryGroupName(repository, null)
+    }
+
+    const onAssignRepositoryGroupName = (
+      repository: Repository,
+      groupName: string
+    ) => {
+      this.props.dispatcher.changeRepositoryGroupName(repository, groupName)
     }
 
     const onCreateWorktree = (repository: Repository) => {
@@ -3885,8 +3969,10 @@ export class App extends React.Component<IAppProps, IAppState> {
       externalEditorLabel: this.getExternalEditorLabel(repository),
       onChangeRepositoryAlias: onChangeRepositoryAlias,
       onRemoveRepositoryAlias: onRemoveRepositoryAlias,
-      onChangeRepositoryGroupName: onChangeRepositoryGroupName,
+      onNewGroupForRepository: onNewGroupForRepository,
       onRemoveRepositoryGroupName: onRemoveRepositoryGroupName,
+      groupNames: getKnownGroupNames(this.state.repositories),
+      onAssignRepositoryGroupName: onAssignRepositoryGroupName,
       onViewOnGitHub: this.viewOnGitHub,
       onCreateWorktree: enableWorktreeSupport() ? onCreateWorktree : undefined,
       onShowWorktrees: enableWorktreeSupport() ? onShowWorktrees : undefined,

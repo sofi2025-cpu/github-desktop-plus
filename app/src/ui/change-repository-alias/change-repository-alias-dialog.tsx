@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogFooter } from '../dialog'
 import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
 import { TextBox } from '../lib/text-box'
 import { assertNever } from '../../lib/fatal-error'
+import { getForgejoName } from '../../lib/forgejo-name'
 
 interface IChangeRepositoryAliasProps {
   readonly dispatcher: Dispatcher
@@ -71,22 +72,27 @@ export class ChangeRepositoryAlias extends React.Component<
   }
 
   private remoteLabel(repository: Repository) {
-    const type = repository.gitHubRepository?.type
-    if (!type) {
+    const { gitHubRepository } = repository
+    if (gitHubRepository === null) {
       return ''
     }
 
-    switch (type) {
+    switch (gitHubRepository.type) {
       case 'github':
         return ' on GitHub'
       case 'bitbucket':
         return ' on Bitbucket'
       case 'gitlab':
         return ' on GitLab'
-      case 'codeberg':
-        return ' on Codeberg'
+      case 'forgejo':
+        return ` on ${getForgejoName(gitHubRepository.endpoint)}`
+      case 'gitea':
+        return ' on Gitea'
       default:
-        assertNever(type, `Unknown repository type: ${type}`)
+        assertNever(
+          gitHubRepository.type,
+          `Unknown repository type: ${gitHubRepository.type}`
+        )
     }
   }
 

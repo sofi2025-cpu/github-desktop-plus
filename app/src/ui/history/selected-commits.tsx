@@ -13,12 +13,12 @@ import { openFile } from '../lib/open-file'
 import {
   isSafeFileExtension,
   CopyFilePathLabel,
-  CopyRelativeFilePathLabel,
-  CopySelectedPathsLabel,
-  CopySelectedRelativePathsLabel,
   DefaultEditorLabel,
   RevealInFileManagerLabel,
   OpenWithDefaultProgramLabel,
+  CopyRelativeFilePathLabel,
+  CopySelectedPathsLabel,
+  CopySelectedRelativePathsLabel,
 } from '../lib/context-menu'
 import { ThrottledScheduler } from '../lib/throttled-scheduler'
 
@@ -40,6 +40,7 @@ import { DiffHeader } from '../diff/diff-header'
 import { Account } from '../../models/account'
 import { Emoji } from '../../lib/emoji'
 import { assertNever } from '../../lib/fatal-error'
+import { getForgejoName } from '../../lib/forgejo-name'
 import { GitHubRepository } from '../../models/github-repository'
 import {
   DiffPresentationStateComponent,
@@ -150,7 +151,12 @@ export class SelectedCommits extends DiffPresentationStateComponent<
     const nextValue = nextProps.selectedCommits.map(c => c.sha).join('')
 
     if (currentValue !== nextValue) {
-      this.setState({ isExpanded: false, selectedFiles: [] })
+      if (this.state.isExpanded) {
+        this.setState({ isExpanded: false })
+      }
+      if (this.state.selectedFiles.length > 0) {
+        this.setState({ selectedFiles: [] })
+      }
     }
   }
 
@@ -557,8 +563,10 @@ function getViewOnGitHubLabel(gitHubRepository: GitHubRepository) {
       return 'View on Bitbucket'
     case 'gitlab':
       return 'View on GitLab'
-    case 'codeberg':
-      return 'View on Codeberg'
+    case 'forgejo':
+      return `View on ${getForgejoName(gitHubRepository.endpoint)}`
+    case 'gitea':
+      return 'View on Gitea'
     default:
       assertNever(
         gitHubRepository.type,

@@ -7,12 +7,13 @@ import {
   WorkflowPreferences,
   ForkContributionTarget,
 } from './workflow-preferences'
+import { UpdateBranchStrategy } from '../lib/update-branch-strategy'
 import { assertNever, fatalError } from '../lib/fatal-error'
 import { createEqualityHash } from './equality-hash'
-import { getRemotes } from '../lib/git'
+import { memoizedGetRemotesFromPath } from '../lib/git'
 import { findDefaultRemote } from '../lib/stores/helpers/find-default-remote'
-import { isTrustedRemoteHost } from '../lib/api'
 import { EditorOverride } from './editor-override'
+import { remoteUrlToWebUrl } from '../lib/remote-parsing'
 
 export enum LoginSpecialValue {
   ForceNullLogin = 1,
@@ -72,7 +73,18 @@ export class Repository {
      * hasn't been resolved yet (e.g. for repositories added before this
      * property was introduced).
      */
-    public readonly gitDir: string | undefined = undefined
+    public readonly gitDir: string | undefined = undefined,
+    /**
+     * The path to the main worktree of this repository, recorded when Desktop
+     * switches onto one of its linked worktrees, or undefined if it hasn't been
+     * resolved yet (e.g. for repositories added before this property was
+     * introduced).
+     *
+     * Deleting a linked worktree can take its administrative git metadata with
+     * it, so the worktree set is not always discoverable after the fact. This
+     * records the main worktree while it is still known.
+     */
+    public readonly mainWorktreePath: string | undefined = undefined
   ) {
     this.name = (gitHubRepository && gitHubRepository.name) || getBaseName(path)
 
@@ -86,6 +98,7 @@ export class Repository {
       this.defaultBranch,
       getCustomOverrideHash(this.customEditorOverride),
       this.workflowPreferences.forkContributionTarget,
+      this.workflowPreferences.updateBranchStrategy,
       this.isTutorialRepository,
       this.overrideLogin
     )
@@ -112,7 +125,7 @@ export class Repository {
 
   private fetchUrl(): void {
     // Get the URL of the default remote, if it exists.
-    getRemotes(this).then(remotes => {
+    memoizedGetRemotesFromPath(this.path).then(remotes => {
       const defaultRemote = findDefaultRemote(remotes)
       if (defaultRemote) {
         this._url = defaultRemote.url
@@ -260,16 +273,7 @@ export function getNonGitHubUrl(repository: Repository): string | null {
     return null
   }
 
-  // Convert potentially SSH URLs (e.g., git@github.com:user/repo.git) to HTTPS URLs (e.g., https://github.com/user/repo.git)
-  // If the URL is already HTTPS, this will be a no-op.
-  const httpsUrl = repository.url.replace(/^[^@]+@([^:]+):/, 'https://$1/')
-
-  // Only return URLs that belong to trusted hosts.
-  if (isTrustedRemoteHost(httpsUrl)) {
-    return httpsUrl
-  }
-
-  return null
+  return remoteUrlToWebUrl(repository.url)
 }
 
 /**
@@ -309,6 +313,19 @@ export function getForkContributionTarget(
   return repository.workflowPreferences.forkContributionTarget !== undefined
     ? repository.workflowPreferences.forkContributionTarget
     : ForkContributionTarget.Parent
+}
+
+/**
+ * Returns how the "Update from <default branch>" action should update the
+ * current branch.
+ */
+export function getUpdateBranchStrategy(
+  repository: Repository
+): UpdateBranchStrategy {
+  return (
+    repository.workflowPreferences.updateBranchStrategy ??
+    UpdateBranchStrategy.Merge
+  )
 }
 
 /**

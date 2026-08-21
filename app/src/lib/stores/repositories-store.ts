@@ -7,9 +7,9 @@ import {
 } from '../databases/repositories-database'
 import { Owner } from '../../models/owner'
 import {
-  deduceRepositoryType,
   GitHubRepository,
   GitHubRepositoryPermission,
+  RepoType,
 } from '../../models/github-repository'
 import {
   LoginSpecialValue,
@@ -24,6 +24,7 @@ import {
   IAPIBranch,
   IAPIFullRepository,
   GitHubAccountType,
+  deriveApiType,
 } from '../api'
 import { TypedBaseStore } from './base-store'
 import { WorkflowPreferences } from '../../models/workflow-preferences'
@@ -35,6 +36,19 @@ import { Account } from '../../models/account'
 
 type AddRepositoryOptions = {
   missing?: boolean
+}
+
+function repoTypeFromEndpoint(endpoint: string): RepoType | undefined {
+  const apiType = deriveApiType(endpoint, 'unknown')
+  switch (apiType) {
+    case 'dotcom':
+    case 'enterprise':
+      return 'github'
+    case 'unknown':
+      return undefined
+    default:
+      return apiType
+  }
 }
 
 /** The store for local repositories. */
@@ -125,11 +139,13 @@ export class RepositoriesStore extends TypedBaseStore<
         dbOwner.login,
         dbOwner.endpoint,
         dbOwner.id!,
-        dbOwner.type
+        dbOwner.type,
+        dbOwner.apiType
       )
     }
 
-    const repoType = deduceRepositoryType(repo.htmlURL || '')
+    const repoType =
+      owner.apiType ?? repoTypeFromEndpoint(owner.endpoint) ?? 'github'
     const ghRepo = new GitHubRepository(
       repo.name,
       repoType,
@@ -166,7 +182,8 @@ export class RepositoriesStore extends TypedBaseStore<
       repo.customEditorOverride,
       repo.isTutorialRepository,
       repo.login,
-      repo.gitDir
+      repo.gitDir,
+      repo.mainWorktreePath
     )
   }
 
@@ -306,6 +323,10 @@ export class RepositoriesStore extends TypedBaseStore<
     repository: Repository,
     missing: boolean
   ): Promise<Repository> {
+    if (repository.missing === missing) {
+      return repository
+    }
+
     await this.db.repositories.update(repository.id, { missing })
 
     this.emitUpdatedRepositories()
@@ -322,7 +343,8 @@ export class RepositoriesStore extends TypedBaseStore<
       repository.customEditorOverride,
       repository.isTutorialRepository,
       repository.overrideLogin,
-      repository.gitDir
+      repository.gitDir,
+      repository.mainWorktreePath
     )
   }
 
@@ -331,6 +353,10 @@ export class RepositoriesStore extends TypedBaseStore<
     repository: Repository,
     gitDir: string
   ): Promise<Repository> {
+    if (repository.gitDir === gitDir) {
+      return repository
+    }
+
     await this.db.repositories.update(repository.id, { gitDir })
 
     this.emitUpdatedRepositories()
@@ -347,7 +373,8 @@ export class RepositoriesStore extends TypedBaseStore<
       repository.customEditorOverride,
       repository.isTutorialRepository,
       repository.overrideLogin,
-      gitDir
+      gitDir,
+      repository.mainWorktreePath
     )
   }
 
@@ -395,6 +422,10 @@ export class RepositoriesStore extends TypedBaseStore<
     repository: Repository,
     defaultBranch: string | null
   ): Promise<Repository> {
+    if (repository.defaultBranch === defaultBranch) {
+      return repository
+    }
+
     await this.db.repositories.update(repository.id, { defaultBranch })
 
     this.emitUpdatedRepositories()
@@ -410,7 +441,9 @@ export class RepositoriesStore extends TypedBaseStore<
       repository.workflowPreferences,
       repository.customEditorOverride,
       repository.isTutorialRepository,
-      repository.overrideLogin
+      repository.overrideLogin,
+      repository.gitDir,
+      repository.mainWorktreePath
     )
   }
 
@@ -441,7 +474,9 @@ export class RepositoriesStore extends TypedBaseStore<
       repository.workflowPreferences,
       repository.customEditorOverride,
       repository.isTutorialRepository,
-      account?.login ?? LoginSpecialValue.ForceNullLogin
+      account?.login ?? LoginSpecialValue.ForceNullLogin,
+      repository.gitDir,
+      repository.mainWorktreePath
     )
   }
 
@@ -471,17 +506,25 @@ export class RepositoriesStore extends TypedBaseStore<
     this.emitUpdatedRepositories()
   }
 
-  /** Update the repository's path. */
+  /**
+   * Update the repository's path.
+   *
+   * Unlike `switchWorktree` this doesn't default `mainWorktreePath` to the
+   * recorded one. Moving a repository invalidates it, so callers say what it is
+   * now, or `undefined` when it can't be resolved.
+   */
   public async updateRepositoryPath(
     repository: Repository,
     path: string,
     gitDir: string | undefined,
+    mainWorktreePath: string | undefined,
     missing: boolean = false
   ): Promise<Repository> {
     await this.db.repositories.update(repository.id, {
       missing,
       path,
       gitDir,
+      mainWorktreePath,
     })
 
     this.emitUpdatedRepositories()
@@ -498,7 +541,8 @@ export class RepositoriesStore extends TypedBaseStore<
       repository.customEditorOverride,
       repository.isTutorialRepository,
       repository.overrideLogin,
-      gitDir
+      gitDir,
+      mainWorktreePath
     )
   }
 
@@ -520,12 +564,16 @@ export class RepositoriesStore extends TypedBaseStore<
    * @param repository  The repository to switch
    * @param worktreePath The path of the worktree to switch to
    * @param gitDir       The git directory for the target worktree
+   * @param mainWorktreePath The path of the repository's main worktree, which
+   *                         recovery relies on once the target worktree (and
+   *                         its git metadata) is gone
    */
   public async switchWorktree(
     repository: Repository,
     worktreePath: string,
     missing = false,
-    gitDir: string | undefined = repository.gitDir
+    gitDir: string | undefined = repository.gitDir,
+    mainWorktreePath: string | undefined = repository.mainWorktreePath
   ): Promise<{ repository: Repository; existingRepository: boolean }> {
     const existing = await this.db.repositories.get({ path: worktreePath })
 
@@ -540,6 +588,7 @@ export class RepositoriesStore extends TypedBaseStore<
       path: worktreePath,
       missing,
       gitDir,
+      mainWorktreePath,
     })
 
     this.emitUpdatedRepositories()
@@ -557,7 +606,8 @@ export class RepositoriesStore extends TypedBaseStore<
         repository.customEditorOverride,
         repository.isTutorialRepository,
         repository.overrideLogin,
-        gitDir
+        gitDir,
+        mainWorktreePath
       ),
       existingRepository: false,
     }
@@ -621,6 +671,9 @@ export class RepositoriesStore extends TypedBaseStore<
     const existingOwner = await this.db.owners.get({ key })
     let id
 
+    const apiType =
+      repoTypeFromEndpoint(endpoint) ?? existingOwner?.apiType ?? 'github'
+
     // Since we look up the owner based on a key which is the product of the
     // lowercased endpoint and login we know that we've found our match but it's
     // possible that the case differs (i.e we found `usera` but the actual login
@@ -630,7 +683,8 @@ export class RepositoriesStore extends TypedBaseStore<
       existingOwner === undefined ||
       existingOwner.login !== login ||
       // This is added so that we update existing owners with an undefined type.
-      (ownerType !== undefined && existingOwner.type !== ownerType)
+      (ownerType !== undefined && existingOwner.type !== ownerType) ||
+      existingOwner.apiType !== apiType
     ) {
       id = existingOwner?.id
       const existingId = id !== undefined ? { id } : {}
@@ -639,13 +693,20 @@ export class RepositoriesStore extends TypedBaseStore<
         key,
         endpoint,
         login,
-        type: ownerType,
+        type: ownerType ?? existingOwner?.type,
+        apiType,
       })
     } else {
       id = forceUnwrap('Missing owner id', existingOwner.id)
     }
 
-    return new Owner(login, endpoint, id, ownerType ?? existingOwner?.type)
+    return new Owner(
+      login,
+      endpoint,
+      id,
+      ownerType ?? existingOwner?.type,
+      apiType
+    )
   }
 
   public async upsertGitHubRepositoryFromMatch(
@@ -719,7 +780,9 @@ export class RepositoriesStore extends TypedBaseStore<
       oldRepo.workflowPreferences,
       oldRepo.customEditorOverride,
       newRepo.isTutorialRepository,
-      oldRepo.overrideLogin
+      oldRepo.overrideLogin,
+      newRepo.gitDir,
+      newRepo.mainWorktreePath
     )
   }
 
@@ -750,7 +813,8 @@ export class RepositoriesStore extends TypedBaseStore<
       repo.customEditorOverride,
       repo.isTutorialRepository,
       repo.overrideLogin,
-      repo.gitDir
+      repo.gitDir,
+      repo.mainWorktreePath
     )
 
     assertIsRepositoryWithGitHubRepository(updatedRepo)

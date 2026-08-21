@@ -1,11 +1,13 @@
 import * as semver from 'semver'
 import {
-  getBitbucketAPIEndpoint,
-  getCodebergAPIEndpoint,
+  BitbucketCloudAPIEndpoint,
+  CodebergCloudAPIEndpoint,
   getDotComAPIEndpoint,
-  getGitLabAPIEndpoint,
+  GiteaCloudAPIEndpoint,
+  GitLabCloudAPIEndpoint,
 } from './api'
 import { assertNonNullable } from './fatal-error'
+import { getRegisteredApiType } from './endpoint-api-type-registry'
 
 export type VersionConstraint = {
   /**
@@ -63,16 +65,28 @@ export const isGist = (ep: string) => {
   return hostname === 'gist.github.com' || hostname === 'gist.ghe.io'
 }
 
-export const isBitbucket = (ep: string) => {
-  return ep === getBitbucketAPIEndpoint()
+export const isBitbucketCloud = (ep: string) => {
+  return ep === BitbucketCloudAPIEndpoint
 }
 
-export const isGitLab = (ep: string) => {
-  return ep === getGitLabAPIEndpoint()
+export const isGitLabCloud = (ep: string) => {
+  return ep === GitLabCloudAPIEndpoint
 }
 
-export const isCodeberg = (ep: string) => {
-  return ep === getCodebergAPIEndpoint()
+export const isCodebergCloud = (ep: string) => {
+  return ep === CodebergCloudAPIEndpoint
+}
+
+export const isGiteaCloud = (ep: string) => {
+  return ep === GiteaCloudAPIEndpoint
+}
+
+export const isCodebergCloudOrForgejo = (ep: string) => {
+  return isCodebergCloud(ep) || getRegisteredApiType(ep) === 'forgejo'
+}
+
+export const isGiteaCloudOrSelfHosted = (ep: string) => {
+  return isGiteaCloud(ep) || getRegisteredApiType(ep) === 'gitea'
 }
 
 /** Whether or not the given endpoint URI is under the ghe.com domain */
@@ -85,9 +99,11 @@ export const isGHE = (ep: string) => new URL(ep).hostname.endsWith('.ghe.com')
 export const isGHES = (ep: string) =>
   !isDotCom(ep) &&
   !isGHE(ep) &&
-  !isBitbucket(ep) &&
-  !isGitLab(ep) &&
-  !isCodeberg(ep)
+  !isBitbucketCloud(ep) &&
+  !isGitLabCloud(ep) &&
+  !isCodebergCloud(ep) &&
+  !isGiteaCloud(ep) &&
+  getRegisteredApiType(ep) === undefined
 
 export function getEndpointVersion(endpoint: string) {
   const key = endpointVersionKey(endpoint)

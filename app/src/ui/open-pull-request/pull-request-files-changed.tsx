@@ -26,6 +26,7 @@ import { getDotComAPIEndpoint } from '../../lib/api'
 import { createCommitURL } from '../../lib/commit-url'
 import { DiffOptions } from '../diff/diff-options'
 import { assertNever } from '../../lib/fatal-error'
+import { getForgejoName } from '../../lib/forgejo-name'
 import { GitHubRepository } from '../../models/github-repository'
 
 interface IPullRequestFilesChangedProps {
@@ -158,8 +159,10 @@ export class PullRequestFilesChanged extends React.Component<
         return 'View on Bitbucket'
       case 'gitlab':
         return 'View on GitLab'
-      case 'codeberg':
-        return 'View on Codeberg'
+      case 'forgejo':
+        return `View on ${getForgejoName(gitHubRepository.endpoint)}`
+      case 'gitea':
+        return 'View on Gitea'
       default:
         assertNever(
           gitHubRepository.type,
