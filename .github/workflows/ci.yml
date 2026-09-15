@@ -54,7 +54,7 @@ on:
       APPLE_APPLICATION_CERT_PASSWORD:
 
 env:
-  NODE_VERSION: 24.15.0
+  NODE_VERSION: 24.19.0
   DESKTOP_ERROR_REPORTING_ENDPOINT: ${{ inputs.error-reporting-endpoint }}
   DESKTOP_NON_FATAL_ERROR_REPORTING_ENDPOINT:
     ${{ inputs.non-fatal-error-reporting-endpoint }}
@@ -214,10 +214,6 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_CODE_SIGNING_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CODE_SIGNING_CLIENT_ID }}
 
-      - name: Generate AppImage zsync
-        if: ${{ runner.os == 'Linux' }}
-        run:
-          script/generate-appimage-zsync.sh dist/*.AppImage ${{ matrix.arch }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:

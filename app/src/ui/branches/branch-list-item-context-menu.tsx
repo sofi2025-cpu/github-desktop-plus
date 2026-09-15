@@ -1,5 +1,5 @@
 import { IMenuItem } from '../../lib/menu-item'
-import { clipboard } from 'electron'
+import { writeClipboardText } from '../main-process-proxy'
 import { Branch, BranchType } from '../../models/branch'
 import { GitHubRepository } from '../../models/github-repository'
 import { getForgejoName } from '../../lib/forgejo-name'
@@ -12,6 +12,7 @@ interface IBranchContextMenuConfig {
   onViewBranchOnGitHub?: () => void
   onViewPullRequestOnGitHub?: () => void
   onSetAsDefaultBranch?: (branchName: string) => void
+  onDuplicateBranch?: (branch: Branch) => void
   onDeleteBranch?: (branchName: string) => void
   onDeleteUnusedLocalBranches?: () => void
   onPullSingleBranch?: (branchName: string) => void
@@ -28,6 +29,7 @@ export function generateBranchContextMenuItems(
     onViewBranchOnGitHub,
     onViewPullRequestOnGitHub,
     onSetAsDefaultBranch,
+    onDuplicateBranch,
     onDeleteBranch,
     onDeleteUnusedLocalBranches,
     onPullSingleBranch,
@@ -45,7 +47,7 @@ export function generateBranchContextMenuItems(
 
   items.push({
     label: __DARWIN__ ? 'Copy Branch Name' : 'Copy branch name',
-    action: () => clipboard.writeText(branch.name),
+    action: () => writeClipboardText(branch.name),
   })
 
   if (onViewBranchOnGitHub !== undefined && gitHubRepository !== null) {
@@ -71,10 +73,10 @@ export function generateBranchContextMenuItems(
     })
   }
 
-  if (onSetAsDefaultBranch !== undefined) {
+  if (onDuplicateBranch !== undefined) {
     items.push({
-      label: __DARWIN__ ? 'Set as Default Branch' : 'Set as default branch',
-      action: () => onSetAsDefaultBranch(branch.nameWithoutRemote),
+      label: __DARWIN__ ? 'Duplicate Branch…' : 'Duplicate branch…',
+      action: () => onDuplicateBranch(branch),
     })
   }
 
@@ -84,6 +86,13 @@ export function generateBranchContextMenuItems(
       label: __DARWIN__ ? 'Pull Branch' : 'Pull branch',
       action: () => onPullSingleBranch(branch.name),
       enabled: true,
+    })
+  }
+
+  if (onSetAsDefaultBranch !== undefined) {
+    items.push({
+      label: __DARWIN__ ? 'Set as Default Branch' : 'Set as default branch',
+      action: () => onSetAsDefaultBranch(branch.nameWithoutRemote),
     })
   }
 

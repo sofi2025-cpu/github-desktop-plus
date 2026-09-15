@@ -355,6 +355,7 @@ import { isGHES } from '../endpoint-capabilities'
 import { Banner, BannerType } from '../../models/banner'
 import { ComputedAction } from '../../models/computed-action'
 import {
+  applyStashEntry,
   createDesktopStashEntry,
   getLastDesktopStashEntryForBranch,
   popStashEntry,
@@ -433,6 +434,7 @@ import {
 } from '../../models/multi-commit-operation'
 import { reorder } from '../git/reorder'
 import { UseWindowsOpenSSHKey } from '../ssh/ssh'
+import { resolveSSHRemoteAlias } from '../ssh/resolve-ssh-host'
 import { isConflictsFlow } from '../multi-commit-operation'
 import { clamp } from '../clamp'
 import { EndpointToken } from '../endpoint-token'
@@ -503,6 +505,16 @@ const RecentRepositoriesKey = 'recently-selected-repositories'
  *  in the repository switcher dropdown
  */
 const RecentRepositoriesLength = 3
+
+/** Number of repositories shown in the "Recent" group by default. */
+export const defaultRecentRepositoriesCount = RecentRepositoriesLength
+
+/**
+ * Highest number of repositories the user can choose to show in the "Recent"
+ * group, and the number of entries retained so that raising the count can
+ * refill the group with previously visited repositories.
+ */
+const MaxRecentRepositoriesLength = 50
 
 const defaultSidebarWidth: number = 250
 const sidebarWidthConfigKey: string = 'sidebar-width'
@@ -578,6 +590,8 @@ export const tabSizeDefault: number = 4
 const tabSizeKey: string = 'tab-size'
 const diffFontSizeKey = 'diff-font-size'
 const diffFontFamilyKey = 'diff-font-family'
+
+const recentRepositoriesCountKey: string = 'recent-repositories-count'
 
 const shellKey = 'shell'
 
@@ -774,6 +788,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private currentTheme: ApplicableTheme = ApplicationTheme.Light
   private selectedTabSize = tabSizeDefault
   private selectedDiffFontSize = defaultDiffFontSize
+  private recentRepositoriesCount: number = defaultRecentRepositoriesCount
   private selectedDiffFontFamily = defaultDiffFontFamily
   private titleBarStyle: TitleBarStyle = __WIN32__ ? 'custom' : 'native'
   private showRecentRepositories: boolean = true
@@ -1473,10 +1488,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
       selectedTheme: this.selectedTheme,
       currentTheme: this.currentTheme,
       selectedTabSize: this.selectedTabSize,
+      recentRepositoriesCount: this.recentRepositoriesCount,
       selectedDiffFontSize: this.selectedDiffFontSize,
       selectedDiffFontFamily: this.selectedDiffFontFamily,
       titleBarStyle: this.titleBarStyle,
-      showRecentRepositories: this.showRecentRepositories,
       showWorktrees: this.showWorktrees,
       showWorktreesInRepoList: this.showWorktreesInRepoList,
       showCompareTab: this.showCompareTab,
@@ -2717,14 +2732,25 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
     const slicedRecentRepositories = recentRepositories.slice(
       0,
-      RecentRepositoriesLength
+      MaxRecentRepositoriesLength
     )
     setNumberArray(RecentRepositoriesKey, slicedRecentRepositories)
-    this.recentRepositories = slicedRecentRepositories
+    this.updateVisibleRecentRepositories(slicedRecentRepositories)
+    this.emitUpdate()
+  }
+
+  private updateVisibleRecentRepositories(
+    retainedRepositories: ReadonlyArray<number> = getNumberArray(
+      RecentRepositoriesKey
+    )
+  ) {
+    this.recentRepositories = retainedRepositories.slice(
+      0,
+      this.recentRepositoriesCount
+    )
     this.notificationsStore.setRecentRepositories(
       this.repositories.filter(r => this.recentRepositories.includes(r.id))
     )
-    this.emitUpdate()
   }
 
   // finish `_selectRepository`s refresh tasks
@@ -2959,6 +2985,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.accounts = accounts
     this.repositories = repositories
+
+    // Must be read before selecting the initial repository, since that's what
+    // populates the list of visible recent repositories.
+    // Backward-compat: users who disabled the recent group in the previous
+    // checkbox setting start with 0 so they don't suddenly see it again.
+    this.recentRepositoriesCount = getNumber(
+      recentRepositoriesCountKey,
+      this.showRecentRepositories ? defaultRecentRepositoriesCount : 0
+    )
 
     this.updateRepositorySelectionAfterRepositoriesChanged()
 
@@ -4958,15 +4993,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.emitUpdate()
   }
 
-  public _setShowRecentRepositories(showRecentRepositories: boolean) {
-    if (this.showRecentRepositories === showRecentRepositories) {
-      return
-    }
-    setBoolean(showRecentRepositoriesKey, showRecentRepositories)
-    this.showRecentRepositories = showRecentRepositories
-    this.emitUpdate()
-  }
-
   public _setShowWorktrees(showWorktrees: boolean) {
     if (this.showWorktrees === showWorktrees) {
       return
@@ -5772,6 +5798,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
     const api = API.fromAccount(account)
 
     const branches = await api.fetchProtectedBranches(owner.login, name)
+    if (branches === null) {
+      return
+    }
 
     await this.repositoriesStore.updateBranchProtections(
       repository.gitHubRepository,
@@ -5789,9 +5818,21 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     const remote = gitStore.defaultRemote
-    return remote !== null
-      ? matchGitHubRepository(this.accounts, remote.url, repository.login)
-      : null
+    if (remote === null) {
+      return null
+    }
+
+    // Match the remote as written first: under setups like `Host github.com`
+    // -> `HostName ssh.github.com` the resolved host serves no web UI, so the
+    // SSH config is only consulted when nothing matched.
+    return (
+      matchGitHubRepository(this.accounts, remote.url, repository.login) ??
+      matchGitHubRepository(
+        this.accounts,
+        await resolveSSHRemoteAlias(remote.url),
+        repository.login
+      )
+    )
   }
 
   /** This shouldn't be called directly. See `Dispatcher`. */
@@ -10211,6 +10252,21 @@ export class AppStore extends TypedBaseStore<IAppState> {
   }
 
   /**
+   * Set the number of repositories shown in the "Recent" group of the
+   * repository list. Setting 0 hides the group.
+   */
+  public _setRecentRepositoriesCount(count: number) {
+    if (!isNaN(count)) {
+      this.recentRepositoriesCount = count
+      setNumber(recentRepositoriesCountKey, count)
+      this.updateVisibleRecentRepositories()
+      this.emitUpdate()
+    }
+
+    return Promise.resolve()
+  }
+
+  /**
    * Set the application-wide diff font size
    */
   public _setSelectedDiffFontSize(diffFontSize: number) {
@@ -10394,6 +10450,21 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.statsStore.increment('stashRestoreCount')
     await this._refreshRepository(repository)
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _applyStashEntry(
+    repository: Repository,
+    stashEntry: IStashEntry
+  ) {
+    await applyStashEntry(repository, stashEntry.stashSha)
+    log.info(
+      `[AppStore. _applyStashEntry] applied stash with commit id ${stashEntry.stashSha}`
+    )
+
+    this.statsStore.increment('stashRestoreCount')
+    await this._refreshRepository(repository)
+    await this._selectWorkingDirectoryFiles(repository)
   }
 
   /** This shouldn't be called directly. See `Dispatcher`. */

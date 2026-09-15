@@ -7,7 +7,7 @@ import { mkdtemp } from 'fs/promises'
 import glob = require('glob')
 const globPromise = promisify(glob)
 
-import { ensureDir, rename, writeFile } from 'fs-extra'
+import { mkdir, rename, writeFile } from 'fs/promises'
 
 import { getVersion } from '../app/package-info'
 import {
@@ -85,6 +85,8 @@ const options: DebianOptions = {
   categories: ['Development', 'GitHub'],
   section: 'GNOME;GTK;Development',
   priority: 'extra',
+  // The AUR -bin package unpacks 'data.tar.zst' ensure zstd is used instead of the host default.
+  compression: 'zstd',
   homepage: 'https://desktop-plus.org',
   depends: [
     // dugite-native dependencies
@@ -162,7 +164,7 @@ export async function packageTransitionalDebian(): Promise<string> {
     join(tmpdir(), 'github-desktop-plus-transitional-')
   )
   const debianDir = join(stagingDir, 'DEBIAN')
-  await ensureDir(debianDir)
+  await mkdir(debianDir, { recursive: true })
 
   const control =
     [

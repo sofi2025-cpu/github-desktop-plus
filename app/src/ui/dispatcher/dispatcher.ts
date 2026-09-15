@@ -1,5 +1,4 @@
 import { Disposable } from 'event-kit'
-import { clipboard } from 'electron'
 
 import {
   IAPIOrganization,
@@ -103,6 +102,7 @@ import {
   executeMenuItem,
   moveToApplicationsFolder,
   isWindowFocused,
+  writeClipboardText,
 } from '../main-process-proxy'
 import {
   CommitStatusStore,
@@ -2692,6 +2692,9 @@ export class Dispatcher {
       case RetryActionType.ResetAndPull:
         return this.resetAndPull(retryAction.repository)
       case RetryActionType.PopStash:
+        if (retryAction.keepStash) {
+          return this.applyStash(retryAction.repository, retryAction.stashEntry)
+        }
         return this.popStash(retryAction.repository, retryAction.stashEntry)
       default:
         return assertNever(retryAction, `Unknown retry action: ${retryAction}`)
@@ -3059,6 +3062,13 @@ export class Dispatcher {
   }
 
   /**
+   * Set the number of recent repositories to show in the repository list
+   */
+  public setRecentRepositoriesCount(count: number) {
+    return this.appStore._setRecentRepositoriesCount(count)
+  }
+
+  /**
    * Set the application-wide diff font size
    */
   public setSelectedDiffFontSize(diffFontSize: number) {
@@ -3244,6 +3254,14 @@ export class Dispatcher {
     return this.appStore._popStashEntry(repository, stashEntry)
   }
 
+  /**
+   * Apply the given stash in the given repository, keeping the stash entry
+   * so that the changes can be restored again later.
+   */
+  public applyStash(repository: Repository, stashEntry: IStashEntry) {
+    return this.appStore._applyStashEntry(repository, stashEntry)
+  }
+
   /** Sets or clears (`null`) the custom name of the given stash */
   public renameStash(
     repository: Repository,
@@ -3310,18 +3328,30 @@ export class Dispatcher {
     const url = getGitHubHtmlUrl(repository)
     if (url !== null) {
       this.statsStore.increment('issueCreationWebpageOpenedCount')
-      return this.appStore._openInBrowser(`${url}/issues/new/choose`)
+      const path = this.getIssueCreationPath(repository)
+      return this.appStore._openInBrowser(`${url}/${path}`)
     } else {
       return false
     }
   }
 
-  public setRepositoryIndicatorsEnabled(repositoryIndicatorsEnabled: boolean) {
-    this.appStore._setRepositoryIndicatorsEnabled(repositoryIndicatorsEnabled)
+  private getIssueCreationPath(repository: Repository): string {
+    const repoType = repository.gitHubRepository?.type ?? 'github'
+    switch (repoType) {
+      case 'github':
+        return 'issues/new/choose'
+      case 'bitbucket':
+      case 'gitlab':
+      case 'forgejo':
+      case 'gitea':
+        return 'issues/new'
+      default:
+        assertNever(repoType, `Unknown repository type: ${repoType}`)
+    }
   }
 
-  public setShowRecentRepositories(showRecentRepositories: boolean) {
-    this.appStore._setShowRecentRepositories(showRecentRepositories)
+  public setRepositoryIndicatorsEnabled(repositoryIndicatorsEnabled: boolean) {
+    this.appStore._setRepositoryIndicatorsEnabled(repositoryIndicatorsEnabled)
   }
 
   public setShowWorktrees(showWorktrees: boolean) {
@@ -4652,13 +4682,12 @@ export class Dispatcher {
   }
 
   public copyPathsToClipboard(paths: ReadonlyArray<string>) {
-    clipboard.writeText(
-      paths
-        .map(p =>
-          convertToCopyPath(p, this.appStore.getState().copyPathNormalization)
-        )
-        .join(EOL)
-    )
+    const text = paths
+      .map(p =>
+        convertToCopyPath(p, this.appStore.getState().copyPathNormalization)
+      )
+      .join(EOL)
+    writeClipboardText(text)
   }
 
   public setBranchSortOrder(branchSortOrder: BranchSortOrder) {
