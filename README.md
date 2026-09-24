@@ -322,4 +322,6 @@ Keep in mind that this version is not endorsed by GitHub, and it's aimed at powe
 
 ## Acknowledgments 🙏
 
+Free code signing on Windows provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). See the [Code signing policy](docs/technical/code-signing-policy.md) for more information.
+
 Application icon adapted from [`git-branch-plus`](https://lucide.dev/icons/git-branch-plus) by [Lucide](https://lucide.dev), [ISC license](https://github.com/lucide-icons/lucide/blob/main/LICENSE).

@@ -363,9 +363,131 @@ jobs:
           path: playwright-videos/**
           if-no-files-found: warn
 
+  sign_windows:
+    name: Sign Windows installers
+    needs: [build, compute_version]
+    runs-on: ubuntu-latest
+    # Skip on PRs. Non-release runs only sign when the TEST_CODE_SIGNING
+    # repository variable is set to 'true'
+    if: |
+      github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/tags/') || vars.TEST_CODE_SIGNING == 'true')
+    continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    timeout-minutes: 360
+    env:
+      SIGNING_POLICY:
+        ${{ startsWith(github.ref, 'refs/tags/') && 'release-signing' ||
+        'test-signing' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install osslsigncode
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osslsigncode
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: './artifacts'
+          pattern: 'Windows-*'
+
+      - name: Collect unsigned installers
+        run: |
+          mkdir unsigned
+          cp artifacts/Windows-*/DesktopPlus-*.exe artifacts/Windows-*/DesktopPlus-*.msi unsigned/
+          ls -l unsigned
+
+      # The artifact configuration expects a ZIP archive with the installers at its root
+      - name: Submit signing request to SignPath
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          APP_VERSION: ${{ needs.compute_version.outputs.APP_VERSION }}
+          SEMVER_COMPATIBLE_VERSION:
+            ${{ needs.compute_version.outputs.SEMVER_COMPATIBLE_VERSION }}
+          # Release signing waits for the manual approval, test signing is automatic
+          WAIT_TIMEOUT_SECONDS:
+            ${{ env.SIGNING_POLICY == 'release-signing' && 18000 || 600 }}
+        run: |
+          Compress-Archive -Path unsigned/* -DestinationPath unsigned-windows-installers.zip
+          Install-Module SignPath -RequiredVersion 4.4.6 -Scope CurrentUser -Force
+          Submit-SigningRequest `
+            -InputArtifactPath unsigned-windows-installers.zip `
+            -OrganizationId $env:SIGNPATH_ORGANIZATION_ID `
+            -ProjectSlug $env:SIGNPATH_PROJECT_SLUG `
+            -SigningPolicySlug $env:SIGNING_POLICY `
+            -Parameters @{
+              'version' = $env:APP_VERSION
+              'product-version' = $env:SEMVER_COMPATIBLE_VERSION
+            } `
+            -Description "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" `
+            -WaitForCompletion `
+            -WaitForCompletionTimeoutInSeconds ([int]$env:WAIT_TIMEOUT_SECONDS) `
+            -OutputArtifactPath signed-windows-installers.zip `
+            -ApiToken $env:SIGNPATH_API_TOKEN
+
+      - name: Check signed installers
+        run: |
+          unzip -o signed-windows-installers.zip -d signed
+          ls -l signed
+          for unsigned in unsigned/*; do
+            signed="signed/$(basename "$unsigned")"
+            if [[ ! -f "$signed" ]]; then
+              echo "::error::Missing signed file: $signed"
+              exit 1
+            fi
+          done
+
+      - name: Verify signatures
+        if: env.SIGNING_POLICY == 'release-signing'
+        run: |
+          for signed in signed/*; do
+            # The signature is verified against the certificate chain embedded
+            # in the file itself, so that no CA bundle is needed. This checks
+            # the integrity of the file and the identity of the signer, but not
+            # whether the certificate chain is trusted.
+            osslsigncode extract-signature -in "$signed" -pem -out signature.pem > /dev/null
+            openssl pkcs7 -in signature.pem -print_certs -out embedded-chain.pem
+            result=$(osslsigncode verify -in "$signed" -CAfile embedded-chain.pem)
+            echo "$result"
+            if ! grep -q "CN=SignPath Foundation" <<< "$result"; then
+              echo "::error::$signed is not signed by SignPath Foundation"
+              exit 1
+            fi
+          done
+
+      - name: Replace unsigned installers with signed ones
+        run: |
+          for arch in x64 arm64; do
+            cp signed/DesktopPlus-*-windows-$arch.exe signed/DesktopPlus-*-windows-$arch.msi artifacts/Windows-$arch/
+          done
+
+      # Overwrite the build artifacts so that the release jobs pick up the
+      # signed installers without having to know about this job
+      - name: Upload signed Windows x64 artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Windows-x64
+          path: artifacts/Windows-x64/
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload signed Windows arm64 artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Windows-arm64
+          path: artifacts/Windows-arm64/
+          if-no-files-found: error
+          overwrite: true
+
   release_github:
     name: Create GitHub release
-    needs: [build, compute_version]
+    needs: [build, sign_windows, compute_version]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:

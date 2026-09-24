@@ -747,45 +747,6 @@ export class RepositoriesStore extends TypedBaseStore<
     )
   }
 
-  /**
-   * Inherits the GitHub repository association, group name, default branch, workflow preferences, editor override, and login from the old repository
-   *
-   * @param newRepo The new repository to update with the old repository's configuration
-   * @param oldRepo The repository to copy the configuration from
-   * @returns
-   */
-  public async inheritConfiguration(
-    newRepo: Repository,
-    oldRepo: Repository
-  ): Promise<Repository> {
-    await this.db.transaction('rw', this.db.repositories, () =>
-      this.db.repositories.update(newRepo.id, {
-        gitHubRepositoryID: oldRepo.gitHubRepository?.dbID ?? null,
-        groupName: oldRepo.groupName,
-        defaultBranch: oldRepo.defaultBranch,
-        workflowPreferences: oldRepo.workflowPreferences,
-        customEditorOverride: oldRepo.customEditorOverride,
-      })
-    )
-    this.emitUpdatedRepositories()
-
-    return new Repository(
-      newRepo.path,
-      newRepo.id,
-      oldRepo.gitHubRepository,
-      newRepo.missing,
-      newRepo.alias,
-      oldRepo.groupName,
-      oldRepo.defaultBranch,
-      oldRepo.workflowPreferences,
-      oldRepo.customEditorOverride,
-      newRepo.isTutorialRepository,
-      oldRepo.overrideLogin,
-      newRepo.gitDir,
-      newRepo.mainWorktreePath
-    )
-  }
-
   public async setGitHubRepository(repo: Repository, ghRepo: GitHubRepository) {
     // If nothing has changed we can skip writing to the database and (more
     // importantly) avoid telling store consumers that the repo store has

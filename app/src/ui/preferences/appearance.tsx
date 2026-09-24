@@ -44,6 +44,8 @@ interface IAppearanceProps {
   readonly onSelectedThemeChanged: (theme: ApplicationTheme) => void
   readonly selectedTabSize: number
   readonly onSelectedTabSizeChanged: (tabSize: number) => void
+  readonly alwaysShowWorktreeList: boolean
+  readonly onAlwaysShowWorktreeListChanged: (value: boolean) => void
   readonly recentRepositoriesCount: number
   readonly onRecentRepositoriesCountChanged: (count: number) => void
   readonly selectedDiffFontSize: number
@@ -302,6 +304,12 @@ export class Appearance extends React.Component<
     this.props.onPreferAbsoluteDatesChanged(event.currentTarget.checked)
   }
 
+  private onAlwaysShowWorktreeListChanged = (
+    event: React.FormEvent<HTMLInputElement>
+  ) => {
+    this.props.onAlwaysShowWorktreeListChanged(event.currentTarget.checked)
+  }
+
   public renderThemeSwatch = (theme: ApplicationTheme) => {
     const darkThemeImage = encodePathAsUrl(__dirname, 'static/ghd_dark.svg')
     const lightThemeImage = encodePathAsUrl(__dirname, 'static/ghd_light.svg')
@@ -499,6 +507,16 @@ export class Appearance extends React.Component<
               this.state.showWorktrees ? CheckboxValue.On : CheckboxValue.Off
             }
             onChange={this.onShowWorktreesChanged}
+          />
+
+          <Checkbox
+            label="Don't hide worktrees dropdown when empty"
+            value={
+              this.props.alwaysShowWorktreeList
+                ? CheckboxValue.On
+                : CheckboxValue.Off
+            }
+            onChange={this.onAlwaysShowWorktreeListChanged}
           />
 
           <Checkbox

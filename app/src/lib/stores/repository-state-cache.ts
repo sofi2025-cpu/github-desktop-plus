@@ -421,6 +421,7 @@ function getInitialRepositoryState(): IRepositoryState {
       commitGraphHiddenBranchRefs: null,
       commitGraphCollapsedBranchGroups: [],
       commitGraphCommitSHAs: [],
+      commitGraphFilterAuthorsList: null,
       compareCommitSHAs: [],
       shasToHighlight: [],
       branches: new Array<Branch>(),

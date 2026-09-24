@@ -1,8 +1,8 @@
-import assert from 'node:assert'
 import { describe, it } from 'node:test'
-import * as URL from 'url'
+import assert from 'node:assert'
 import { API, getNextPagePathWithIncreasingPageSize } from '../../src/lib/api'
 import { CopilotError } from '../../src/lib/copilot-error'
+import * as URL from 'url'
 
 interface IPageInfo {
   per_page: number

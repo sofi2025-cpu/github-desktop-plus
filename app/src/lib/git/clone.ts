@@ -7,6 +7,8 @@ import { envForRemoteOperation } from './environment'
 import { homedir } from 'os'
 import * as Path from 'path'
 
+const unsupportedCloneProtocols: ReadonlyArray<string> = ['ext', 'ext.exe']
+
 /**
  * Check whether a resolved clone path targets a sensitive location that
  * should never be used as a clone destination. This is a backstop against
@@ -72,6 +74,15 @@ export async function clone(
   login: string | null,
   progressCallback?: (progress: ICloneProgress) => void
 ): Promise<void> {
+  const unsupportedProtocol = unsupportedCloneProtocols.find(protocol =>
+    url.startsWith(`${protocol}::`)
+  )
+  if (unsupportedProtocol !== undefined) {
+    throw new Error(
+      `The "${unsupportedProtocol}" transport is not supported for cloning in ${__APP_NAME__}.`
+    )
+  }
+
   if (isClonePathSensitive(path)) {
     throw new Error(
       `The clone destination "${path}" targets a sensitive system location. ` +
@@ -82,6 +93,10 @@ export async function clone(
   const env = {
     ...(await envForRemoteOperation(url)),
     GIT_CLONE_PROTECTION_ACTIVE: 'false',
+    // Git's environment allowlist takes precedence over protocol configuration.
+    GIT_ALLOW_PROTOCOL: process.env.GIT_ALLOW_PROTOCOL?.split(':')
+      .filter(protocol => !unsupportedCloneProtocols.includes(protocol))
+      .join(':'),
   }
 
   const remoteUrl = login
@@ -96,6 +111,11 @@ export async function clone(
   const args = [
     '-c',
     `init.defaultBranch=${defaultBranch}`,
+    // Apply the same policy after Git expands configured URL rewrites.
+    ...unsupportedCloneProtocols.flatMap(protocol => [
+      '-c',
+      `protocol.${protocol}.allow=never`,
+    ]),
     'clone',
     '--recursive',
   ]

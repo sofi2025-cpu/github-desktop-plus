@@ -42,6 +42,7 @@ export class GitHubRepository {
   ) {
     this.hash = createEqualityHash(
       this.name,
+      this.type,
       this.owner.login,
       this.login,
       this.dbID,

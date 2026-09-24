@@ -107,6 +107,18 @@ export interface ITextBoxProps {
   readonly ariaDescribedBy?: string
 
   readonly ariaControls?: string
+
+  /** Optional aria-expanded attribute, for a combobox input */
+  readonly ariaExpanded?: boolean
+
+  /** Optional aria-autocomplete attribute, for a combobox input */
+  readonly ariaAutocomplete?: 'list' | 'none' | 'inline' | 'both'
+
+  /** Optional aria-haspopup attribute, for a combobox input */
+  readonly ariaHasPopup?: 'listbox'
+
+  /** Optional aria-activedescendant attribute, for a combobox input */
+  readonly ariaActiveDescendant?: string
 }
 
 interface ITextBoxState {
@@ -183,6 +195,30 @@ export class TextBox extends React.Component<ITextBoxProps, ITextBoxState> {
     if (this.inputElement !== null) {
       this.inputElement.select()
     }
+  }
+
+  /** Provides access to the underlying input element. */
+  public getInputElement(): HTMLInputElement | null {
+    return this.inputElement
+  }
+
+  /**
+   * Updates the internally tracked cursor position to reflect the current
+   * position of the caret in the input element. Useful when the caret is
+   * moved without the value being modified (i.e. arrow keys or mouse clicks)
+   * to prevent the next re-render from restoring a stale position.
+   */
+  public syncCursorPosition() {
+    if (this.inputElement === null || this.isComposing) {
+      return
+    }
+
+    this.setState({
+      cursorPosition: {
+        start: this.inputElement.selectionStart ?? 0,
+        end: this.inputElement.selectionEnd ?? 0,
+      },
+    })
   }
 
   /** Determines if the contained text input element is currently focused. */
@@ -350,6 +386,7 @@ export class TextBox extends React.Component<ITextBoxProps, ITextBoxState> {
         {prefixedIcon && (
           <Octicon className="prefixed-icon" symbol={prefixedIcon} />
         )}
+        {/* eslint-disable-next-line jsx-a11y/aria-activedescendant-has-tabindex */}
         <input
           id={inputId}
           ref={this.onInputRef}
@@ -372,6 +409,10 @@ export class TextBox extends React.Component<ITextBoxProps, ITextBoxState> {
           aria-labelledby={this.props.ariaLabelledBy}
           aria-controls={this.props.ariaControls}
           aria-describedby={this.props.ariaDescribedBy}
+          aria-expanded={this.props.ariaExpanded}
+          aria-autocomplete={this.props.ariaAutocomplete}
+          aria-haspopup={this.props.ariaHasPopup}
+          aria-activedescendant={this.props.ariaActiveDescendant}
           required={this.props.required}
         />
         {this.props.displayClearButton &&

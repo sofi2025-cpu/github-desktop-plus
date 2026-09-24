@@ -211,6 +211,13 @@ import {
   launchCustomExternalEditor,
   launchExternalEditor,
 } from '../editors'
+import {
+  canNarrowExistingResults,
+  commitMatchesSearchFilter,
+  ICommitSearchFilter,
+  isCommitSearchFilterEmpty,
+  parseCommitSearchFilter,
+} from '../commit-search-filter'
 import { assertNever, fatalError, forceUnwrap } from '../fatal-error'
 
 import { formatCommitMessage } from '../format-commit-message'
@@ -337,6 +344,11 @@ import {
   getFloatNumber,
 } from '../local-storage'
 import { ExternalEditorError, suggestedExternalEditor } from '../editors/shared'
+import {
+  CopilotAppError,
+  findCopilotApp,
+  openInCopilotApp,
+} from '../copilot-app'
 import { ApiRepositoriesStore } from './api-repositories-store'
 import {
   updateChangedFiles,
@@ -347,6 +359,7 @@ import { ManualConflictResolution } from '../../models/manual-conflict-resolutio
 import { BranchPruner } from './helpers/branch-pruner'
 import {
   enableCopilotConflictResolution,
+  enableCopilotAppHandoff,
   enableCopilotSdkCommitMessageGeneration,
   enableCustomIntegration,
   enableWorktreeSupport,
@@ -391,6 +404,10 @@ import {
 import { parseRemote } from '../../lib/remote-parsing'
 import { createTutorialRepository } from './helpers/create-tutorial-repository'
 import { sendNonFatalException } from '../helpers/non-fatal-exception'
+import {
+  CopilotConflictResolutionError,
+  CopilotConflictResolutionFailureStage,
+} from '../copilot-conflict-resolution-error'
 import { getDefaultDir } from '../../ui/lib/default-dir'
 import { WorkflowPreferences } from '../../models/workflow-preferences'
 import { RepositoryIndicatorUpdater } from './helpers/repository-indicator-updater'
@@ -488,6 +505,7 @@ import {
 } from '../pull-request-refs'
 import { resolveWithin } from '../path'
 import { WorktreeEntry } from '../../models/worktree'
+import { shouldShowWorktreeDropdown } from '../worktree-dropdown'
 import type { Model } from '@github/copilot-sdk/dist/generated/rpc'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
@@ -624,6 +642,7 @@ const pullRequestSuggestedNextActionKey =
 
 export const useCustomEditorKey = 'use-custom-editor'
 const customEditorKey = 'custom-editor'
+const copilotAppPathKey = 'copilot-app-path'
 
 export const useCustomShellKey = 'use-custom-shell'
 const customShellKey = 'custom-shell'
@@ -635,6 +654,8 @@ export const underlineLinksDefault = true
 
 export const showDiffCheckMarksDefault = true
 export const showDiffCheckMarksKey = 'diff-check-marks-visible'
+
+const alwaysShowWorktreeListKey = 'always-show-worktree-list'
 
 export const showBranchNameInRepoListKey = 'show-branch-name-in-repo-list'
 const copyPathNormalizationKey = 'copy-path-normalization'
@@ -816,6 +837,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   private useCustomEditor: boolean = false
   private customEditor: ICustomIntegration | null = null
+  private copilotAppPath: string | null = null
 
   private useCustomShell: boolean = false
   private customShell: ICustomIntegration | null = null
@@ -832,6 +854,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     | undefined = undefined
 
   private showDiffCheckMarks: boolean = showDiffCheckMarksDefault
+  private alwaysShowWorktreeList: boolean = false
 
   private showBranchNameInRepoList: ShowBranchNameInRepoListSetting =
     defaultShowBranchNameInRepoListSetting
@@ -1511,6 +1534,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       customEditor: this.customEditor,
       useCustomShell: this.useCustomShell,
       customShell: this.customShell,
+      copilotAppPath: this.copilotAppPath,
       branchPresetScript: this.branchPresetScript,
       showCIStatusPopover: this.showCIStatusPopover,
       notificationsEnabled: getNotificationsEnabled(),
@@ -1519,6 +1543,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       cachedRepoRulesets: this.cachedRepoRulesets,
       underlineLinks: this.underlineLinks,
       showDiffCheckMarks: this.showDiffCheckMarks,
+      alwaysShowWorktreeList: this.alwaysShowWorktreeList,
       showBranchNameInRepoList: this.showBranchNameInRepoList,
       copyPathNormalization: this.copyPathNormalization,
       branchSortOrder: this.branchSortOrder,
@@ -2025,9 +2050,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
         return
       }
 
-      const queryLowercase = compareState.commitSearchQuery.toLowerCase()
+      const searchFilter = parseCommitSearchFilter(
+        compareState.commitSearchQuery
+      )
       const filteredCommits = commits.filter(sha =>
-        this.commitIsIncluded(gitStore.commitLookup.get(sha), queryLowercase)
+        commitMatchesSearchFilter(gitStore.commitLookup.get(sha), searchFilter)
       )
 
       const historyState: IDisplayHistory = {
@@ -2053,7 +2080,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
         await this._loadNextCommitBatch(
           repository,
           filteredCommits.length,
-          queryLowercase
+          searchFilter
         )
       }
       if (action.kind === HistoryTabMode.Compare) {
@@ -2192,16 +2219,18 @@ export class AppStore extends TypedBaseStore<IAppState> {
   public async _loadNextCommitBatch(
     repository: Repository,
     alreadyFiltered: number,
-    queryTextLowercase?: string
+    searchFilter?: ICommitSearchFilter
   ): Promise<void> {
     const gitStore = this.gitStoreCache.get(repository)
 
     const state = this.repositoryStateCache.get(repository)
     const commits = state.compareState.allHistoryCommitSHAs
-    if (queryTextLowercase === undefined) {
-      queryTextLowercase = state.compareState.commitSearchQuery.toLowerCase()
+    if (searchFilter === undefined) {
+      searchFilter = parseCommitSearchFilter(
+        state.compareState.commitSearchQuery
+      )
     }
-    const isSearching = !!queryTextLowercase
+    const isSearching = !isCommitSearchFilterEmpty(searchFilter)
 
     const tip = state.branchesState.tip
 
@@ -2229,7 +2258,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     const newFilteredCommits = newCommits.filter(sha =>
-      this.commitIsIncluded(gitStore.commitLookup.get(sha), queryTextLowercase)
+      commitMatchesSearchFilter(gitStore.commitLookup.get(sha), searchFilter)
     )
 
     this.repositoryStateCache.updateCompareState(repository, () => ({
@@ -2246,7 +2275,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       return this._loadNextCommitBatch(
         repository,
         numFilteredCommits,
-        queryTextLowercase
+        searchFilter
       )
     }
     return
@@ -2384,7 +2413,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   /** This shouldn't be called directly. See `Dispatcher`. */
   public async _commitGraph_loadNextCommitBatch(
-    repository: Repository
+    repository: Repository,
+    alreadyFiltered: number
   ): Promise<void> {
     const gitStore = this.gitStoreCache.get(repository)
     const state = this.repositoryStateCache.get(repository)
@@ -2394,28 +2424,19 @@ export class AppStore extends TypedBaseStore<IAppState> {
       return
     }
 
-    const queryTextLowercase =
-      state.compareState.commitSearchQuery.toLowerCase()
+    const searchFilter = parseCommitSearchFilter(
+      state.compareState.commitSearchQuery
+    )
+    const isSearching = !isCommitSearchFilterEmpty(searchFilter)
 
-    if (queryTextLowercase.length > 0) {
-      // Graph search filters in memory, so continue paging until the loaded
-      // graph has enough matches or Git reports no more commits.
-      const commitGraphFilteredCommitCount = commitGraphCommitSHAs.filter(sha =>
-        this.commitIsIncluded(
-          gitStore.commitLookup.get(sha),
-          queryTextLowercase
-        )
-      ).length
-
-      if (commitGraphFilteredCommitCount >= MinimumFilteredCommitsToLoad) {
-        return
-      }
+    if (isSearching && alreadyFiltered >= MinimumFilteredCommitsToLoad) {
+      return
     }
 
     const newCommits = await gitStore.commitGraph_loadCommitBatch(
       commitGraphRefs,
       commitGraphCommitSHAs.length,
-      !!queryTextLowercase
+      isSearching
     )
 
     if (!newCommits || newCommits.length === 0) {
@@ -2438,40 +2459,77 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.emitUpdate()
 
     const latestState = this.repositoryStateCache.get(repository)
-    const latestQueryTextLowercase =
-      latestState.compareState.commitSearchQuery.toLowerCase()
+    const latestSearchFilter = parseCommitSearchFilter(
+      latestState.compareState.commitSearchQuery
+    )
 
-    if (latestQueryTextLowercase.length > 0) {
-      const commitGraphFilteredCommitCount =
-        latestState.compareState.commitGraphCommitSHAs.filter(sha =>
-          this.commitIsIncluded(
-            gitStore.commitLookup.get(sha),
-            latestQueryTextLowercase
-          )
-        ).length
+    if (!isCommitSearchFilterEmpty(latestSearchFilter)) {
+      const newFilteredCommitCount = newCommits.filter(sha =>
+        commitMatchesSearchFilter(
+          gitStore.commitLookup.get(sha),
+          latestSearchFilter
+        )
+      ).length
 
-      if (commitGraphFilteredCommitCount < MinimumFilteredCommitsToLoad) {
-        return this._commitGraph_loadNextCommitBatch(repository)
+      const numFilteredCommits = alreadyFiltered + newFilteredCommitCount
+      if (numFilteredCommits < MinimumFilteredCommitsToLoad) {
+        return this._commitGraph_loadNextCommitBatch(
+          repository,
+          numFilteredCommits
+        )
       }
     }
   }
 
-  private commitIsIncluded(
-    commit: Commit | undefined,
-    filterTextLowerCase: string
-  ): boolean {
-    if (!commit) {
-      return false
-    }
-    return (
-      !filterTextLowerCase ||
-      commit.summary.toLowerCase().includes(filterTextLowerCase) ||
-      commit.body.toLowerCase().includes(filterTextLowerCase) ||
-      commit.tags.some(tag =>
-        tag.toLowerCase().startsWith(filterTextLowerCase)
-      ) ||
-      commit.sha.toLowerCase().startsWith(filterTextLowerCase)
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _commitGraph_ensureEnoughFilteredCommits(
+    repository: Repository
+  ): Promise<void> {
+    const state = this.repositoryStateCache.get(repository)
+    const searchFilter = parseCommitSearchFilter(
+      state.compareState.commitSearchQuery
     )
+
+    if (isCommitSearchFilterEmpty(searchFilter)) {
+      return
+    }
+
+    // Counting what's already loaded keeps the search path (which runs on
+    // every keystroke) from hitting Git once the graph holds enough matches.
+    const gitStore = this.gitStoreCache.get(repository)
+    const loadedFilteredCount = state.compareState.commitGraphCommitSHAs.filter(
+      sha =>
+        commitMatchesSearchFilter(gitStore.commitLookup.get(sha), searchFilter)
+    ).length
+
+    return this._commitGraph_loadNextCommitBatch(
+      repository,
+      loadedFilteredCount
+    )
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _commitGraph_loadFilterAuthors(
+    repository: Repository
+  ): Promise<void> {
+    const gitStore = this.gitStoreCache.get(repository)
+    const authors = await gitStore.commitGraph_loadFilterAuthors()
+
+    if (authors === null) {
+      return
+    }
+
+    const state = this.repositoryStateCache.get(repository)
+
+    if (state.compareState.commitGraphFilterAuthorsList === authors) {
+      return
+    }
+
+    this.repositoryStateCache.updateCompareState(repository, () => ({
+      commitGraphFilterAuthorsList: authors,
+    }))
+
+    this.emitUpdate()
   }
 
   public async _updateCommitSearchQuery(
@@ -2480,7 +2538,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
   ): Promise<void> {
     const state = this.repositoryStateCache.get(repository)
     const compareState = state.compareState
-    const isIncrementalSearch = query.startsWith(compareState.commitSearchQuery)
+    const searchFilter = parseCommitSearchFilter(query)
+    const isIncrementalSearch = canNarrowExistingResults(
+      compareState.commitSearchQuery,
+      query
+    )
 
     this.repositoryStateCache.updateCompareState(repository, () => ({
       commitSearchQuery: query,
@@ -2493,12 +2555,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
     const candidateCommitSHAs = isIncrementalSearch
       ? compareState.filteredHistoryCommitSHAs
       : compareState.allHistoryCommitSHAs
-    const queryTextLowercase = query.toLowerCase()
-    const filteredCommitSHAs = queryTextLowercase
-      ? candidateCommitSHAs.filter(sha =>
-          this.commitIsIncluded(state.commitLookup.get(sha), queryTextLowercase)
+    const filteredCommitSHAs = isCommitSearchFilterEmpty(searchFilter)
+      ? candidateCommitSHAs
+      : candidateCommitSHAs.filter(sha =>
+          commitMatchesSearchFilter(state.commitLookup.get(sha), searchFilter)
         )
-      : candidateCommitSHAs
     this.repositoryStateCache.updateCompareState(repository, () => ({
       filteredHistoryCommitSHAs: filteredCommitSHAs,
     }))
@@ -2507,7 +2568,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.currentCommitFilterPromise = this._loadNextCommitBatch(
         repository,
         filteredCommitSHAs.length,
-        queryTextLowercase
+        searchFilter
       )
       await this.currentCommitFilterPromise
       this.currentCommitFilterPromise = null
@@ -2985,6 +3046,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.accounts = accounts
     this.repositories = repositories
+    this.alwaysShowWorktreeList = getBoolean(alwaysShowWorktreeListKey, false)
 
     // Must be read before selecting the initial repository, since that's what
     // populates the list of visible recent repositories.
@@ -3180,6 +3242,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.useCustomEditor =
       enableCustomIntegration() && getBoolean(useCustomEditorKey, false)
     this.customEditor = getObject<ICustomIntegration>(customEditorKey) ?? null
+    this.copilotAppPath = localStorage.getItem(copilotAppPathKey)
 
     this.useCustomShell =
       enableCustomIntegration() && getBoolean(useCustomShellKey, false)
@@ -3277,27 +3340,24 @@ export class AppStore extends TypedBaseStore<IAppState> {
   /**
    * Determine whether the worktree dropdown is currently shown in the toolbar.
    *
-   * This mirrors the render condition in `App.renderWorktreeToolbarButton`: the
-   * dropdown is shown when worktree support is enabled and either the selected
-   * repository has at least one linked worktree (i.e. more than just the main
-   * worktree) or the worktree foldout is currently open (which lets the user
-   * create their first worktree from the toolbar).
+   * Shares the render condition in `App.renderWorktreeToolbarButton` so that
+   * the toolbar reserves space for the dropdown whenever it is visible.
    */
   private isWorktreeDropdownVisible(): boolean {
     if (!enableWorktreeSupport() || !this.showWorktrees) {
       return false
     }
 
-    if (this.currentFoldout?.type === FoldoutType.Worktree) {
-      return true
+    const repository = this.selectedRepository
+    if (!(repository instanceof Repository)) {
+      return false
     }
 
-    const repository = this.selectedRepository
-    const worktreeCount =
-      repository instanceof Repository
-        ? this.repositoryStateCache.get(repository).worktrees.length
-        : 0
-    return worktreeCount > 1
+    return shouldShowWorktreeDropdown(
+      this.repositoryStateCache.get(repository).worktrees.length,
+      this.currentFoldout?.type === FoldoutType.Worktree,
+      this.alwaysShowWorktreeList
+    )
   }
 
   /**
@@ -4783,12 +4843,20 @@ export class AppStore extends TypedBaseStore<IAppState> {
       return assertNever(section, `Unknown section: ${section}`)
     }
 
+    // Keep the author filter options fresh once they've been loaded
+    const filterAuthorsRefresh =
+      this.repositoryStateCache.get(repository).compareState
+        .commitGraphFilterAuthorsList !== null
+        ? this._commitGraph_loadFilterAuthors(repository)
+        : Promise.resolve()
+
     await Promise.all([
       gitStore.updateLastFetched(),
       gitStore.loadStashEntries(),
       this._refreshAuthor(repository),
       this._refreshWorktrees(repository),
       refreshSectionPromise,
+      filterAuthorsRefresh,
     ])
 
     await gitStore.refreshTags()
@@ -4945,10 +5013,18 @@ export class AppStore extends TypedBaseStore<IAppState> {
     // focus event. No point in having the RepositoryIndicatorUpdater do
     // it as well.
     //
+    // Repository-list reloads can create a different object for the selected
+    // database row, so compare IDs rather than references. Cloning selections
+    // aren't local repositories and must not exclude an entry with the same ID.
+    //
     // Note that this method should never leak the actual repositories
     // instance since that's a mutable array. We should always return
     // a copy.
-    return this.repositories.filter(x => x !== this.selectedRepository)
+    const selectedRepositoryID =
+      this.selectedRepository instanceof Repository
+        ? this.selectedRepository.id
+        : null
+    return this.repositories.filter(x => x.id !== selectedRepositoryID)
   }
 
   /**
@@ -7732,12 +7808,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.accounts,
       repository
     )
-
     if (!account) {
       return null
     }
 
     const totalTimer = startTimer('resolve conflicts with Copilot', repository)
+    let failureStage: CopilotConflictResolutionFailureStage = 'gather-context'
 
     try {
       const state = this.repositoryStateCache.get(repository)
@@ -7746,6 +7822,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
       if (conflictState === null) {
         log.warn(
           'AppStore: resolveConflictsWithCopilot called with no active conflict state'
+        )
+        this.statsStore.increment(
+          'copilotConflictResolutionNoConflictStateCount'
         )
         return null
       }
@@ -7767,6 +7846,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
         log.warn(
           'AppStore: resolveConflictsWithCopilot called with no conflicted files'
         )
+        this.statsStore.increment(
+          'copilotConflictResolutionNoConflictedFilesCount'
+        )
         return null
       }
 
@@ -7785,6 +7867,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
         'copilotStore.resolveConflicts',
         repository
       )
+      failureStage = 'resolve-model'
       const modelRequest = await this.resolveCopilotModelRequest(
         this.getSelectedCopilotModels(account)['conflict-resolution'] ?? null
       )
@@ -7797,6 +7880,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
           onProgress,
           signal
         )
+        failureStage = 'process-result'
 
         // The model can only cite data we placed in the prompt, so resolving
         // its references is a simple lookup against the gathered context —
@@ -7815,6 +7899,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
             ? [{ path: f.path, reason: f.skippedReason }]
             : []
         )
+
+        if (
+          result.resolutions.length === 0 &&
+          skippedFiles.length === context.files.length
+        ) {
+          this.statsStore.increment(
+            'copilotConflictResolutionAllFilesSkippedCount'
+          )
+        }
 
         return {
           resolutions: result.resolutions,
@@ -7838,7 +7931,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
       // Propagate real failures so the caller can surface the underlying error
       // instead of a generic "no results" message.
       log.warn('AppStore: Copilot conflict resolution failed', e)
-      throw e
+      throw e instanceof CopilotConflictResolutionError
+        ? e
+        : new CopilotConflictResolutionError(e, failureStage)
     } finally {
       totalTimer.done()
     }
@@ -8255,7 +8350,20 @@ export class AppStore extends TypedBaseStore<IAppState> {
       }
 
       if (result === null) {
-        throw new Error('Copilot conflict resolution returned no results')
+        this.repositoryStateCache.updateMultiCommitOperationState(
+          repository,
+          () => ({
+            step: {
+              kind: MultiCommitOperationStepKind.ShowConflicts,
+              conflictState,
+            },
+            useCopilotConflictResolution: false,
+            copilotResolutionProgress: null,
+            copilotResolutionAbortController: null,
+          })
+        )
+        this.emitUpdate()
+        return
       }
 
       if (isConfirmAbortFromLoading) {
@@ -8326,10 +8434,18 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
       this.statsStore.increment('copilotConflictResolutionErrorCount')
 
+      const failure =
+        e instanceof CopilotConflictResolutionError
+          ? e
+          : new CopilotConflictResolutionError(e, 'unknown')
+      sendNonFatalException('copilotConflictResolution', failure)
+
       // Surface the error to the user so they understand why they were
       // routed back to manual conflict resolution. Mirrors the pattern
       // used by `_generateCommitMessage`.
-      this.emitError(new ErrorWithMetadata(e, { repository }))
+      this.emitError(
+        new ErrorWithMetadata(failure.underlyingError, { repository })
+      )
 
       // Transition back to manual conflict resolution
       this.repositoryStateCache.updateMultiCommitOperationState(
@@ -8916,6 +9032,49 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
   }
 
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _openInCopilotApp(repositoryPath: string): Promise<void> {
+    if (!enableCopilotAppHandoff()) {
+      log.debug('Ignoring unavailable Copilot app handoff')
+      return
+    }
+
+    try {
+      const appPath =
+        this.copilotAppPath !== null
+          ? this.copilotAppPath
+          : (await findCopilotApp()) ?? undefined
+      if (appPath === undefined) {
+        throw new CopilotAppError(
+          'not-found',
+          'GitHub Copilot could not be found.'
+        )
+      }
+
+      await openInCopilotApp(appPath, repositoryPath)
+    } catch (error) {
+      log.error('Could not hand off to GitHub Copilot', error)
+      if (error instanceof CopilotAppError && error.kind === 'not-found') {
+        this._showPopup({
+          type: PopupType.CopilotAppNotFound,
+        })
+      } else {
+        throw error
+      }
+    }
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _setCopilotAppPath(path: string | null): Promise<void> {
+    if (path === null) {
+      localStorage.removeItem(copilotAppPathKey)
+    } else {
+      localStorage.setItem(copilotAppPathKey, path)
+    }
+    this.copilotAppPath = path
+    this.emitUpdate()
+  }
+
   /** Open a path using a selected editor without changing preferences. */
   public async _openInSelectedExternalEditor(
     fullPath: string,
@@ -9225,6 +9384,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return this.statsStore.reportStats(this.accounts, this.repositories)
   }
 
+  /** This shouldn't be called directly. See 'Dispatcher'. */
+  public _sendStats() {
+    return this.statsStore.sendStats(this.accounts, this.repositories)
+  }
+
   public _recordLaunchStats(stats: ILaunchStats): Promise<void> {
     return this.statsStore.recordLaunchStats(stats)
   }
@@ -9289,8 +9453,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return this.signInStore.beginSelfHostedSignIn(apiType, resultCallback)
   }
 
-  public _setSignInEndpoint(url: string): Promise<void> {
-    return this.signInStore.setEndpoint(url)
+  /** This shouldn't be called directly. See 'Dispatcher'. */
+  public _setSignInEndpoint(
+    url: string,
+    isEndpointFromGit = false
+  ): Promise<void> {
+    return this.signInStore.setEndpoint(url, isEndpointFromGit)
   }
 
   public _setSignInToken(token: string): Promise<void> {
@@ -11827,6 +11995,16 @@ export class AppStore extends TypedBaseStore<IAppState> {
     if (showDiffCheckMarks !== this.showDiffCheckMarks) {
       this.showDiffCheckMarks = showDiffCheckMarks
       setBoolean(showDiffCheckMarksKey, showDiffCheckMarks)
+      this.emitUpdate()
+    }
+  }
+
+  /** This shouldn't be called directly. See 'Dispatcher'. */
+  public _setAlwaysShowWorktreeList(alwaysShowWorktreeList: boolean) {
+    if (alwaysShowWorktreeList !== this.alwaysShowWorktreeList) {
+      this.alwaysShowWorktreeList = alwaysShowWorktreeList
+      setBoolean(alwaysShowWorktreeListKey, alwaysShowWorktreeList)
+      this.updateResizableConstraints()
       this.emitUpdate()
     }
   }

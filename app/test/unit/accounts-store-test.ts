@@ -208,7 +208,7 @@ describe('AccountsStore', () => {
         new Account(
           'joan',
           GitLabCloudAPIEndpoint,
-          'dotcom',
+          'gitlab',
           't',
           '',
           0,

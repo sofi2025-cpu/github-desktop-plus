@@ -139,13 +139,7 @@ export async function getCommits(
     refs: '%D',
   })
 
-  const args = ['log']
-
-  if (revisionRange !== undefined) {
-    args.push(revisionRange)
-  }
-
-  args.push('--date=raw')
+  const args = ['log', '--date=raw']
 
   if (limit !== undefined) {
     args.push(`--max-count=${limit}`)
@@ -159,9 +153,22 @@ export async function getCommits(
     ...formatArgs,
     '--no-show-signature',
     '--no-color',
-    ...additionalArgs,
-    '--'
+    ...additionalArgs
   )
+
+  // The explicit revision originally preceded additionalArgs, so it must not
+  // inherit an exclusion toggle left active by options such as --not --remotes.
+  if (revisionRange !== undefined) {
+    const isExcludingRevisions =
+      additionalArgs.filter(arg => arg === '--not').length % 2 === 1
+    if (isExcludingRevisions) {
+      args.push('--not')
+    }
+
+    args.push('--end-of-options', revisionRange)
+  }
+
+  args.push('--')
   const result = await git(args, repository.path, 'getCommits', {
     successExitCodes: new Set([0, 128]),
     encoding: 'buffer',
@@ -202,6 +209,60 @@ export async function getCommits(
       tags
     )
   })
+}
+
+/**
+ * Get the unique commit authors (name and email) across all refs in the
+ * repository, deduplicated by email and sorted by name.
+ */
+export async function getUniqueAuthorsNameAndEmail(
+  repository: Repository
+): Promise<ReadonlyArray<{ name: string; email: string }>> {
+  const { formatArgs, parse } = createLogParser({
+    name: '%an', // author name
+    email: '%ae', // author email
+  })
+
+  const args = [
+    'log',
+    '--all',
+    ...formatArgs,
+    '--no-show-signature',
+    '--no-color',
+    '--',
+  ]
+
+  const result = await git(
+    args,
+    repository.path,
+    'getUniqueAuthorsNameAndEmail',
+    {
+      successExitCodes: new Set([0, 128]),
+    }
+  )
+
+  const authors = new Array<{ name: string; email: string }>()
+
+  // if the repository has an unborn HEAD, there are no commits and thus no authors
+  if (result.exitCode === 128) {
+    return authors
+  }
+
+  const seenEmails = new Set<string>()
+
+  const parsed = parse(result.stdout)
+
+  for (const { name, email } of parsed) {
+    if (!email || seenEmails.has(email)) {
+      continue
+    }
+
+    seenEmails.add(email)
+
+    authors.push({ name: name.length > 0 ? name : email, email })
+  }
+
+  return authors.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /** This interface contains information of a changeset. */

@@ -7,7 +7,7 @@ describe('parseConventionalCommit', () => {
     const parsed = parseConventionalCommit('feat: add a new button')
     assert.deepStrictEqual(parsed, {
       rawType: 'feat',
-      label: 'Feat',
+      label: 'feat',
       scope: null,
       leftSideText: '',
       rightSideText: 'add a new button',
@@ -18,7 +18,7 @@ describe('parseConventionalCommit', () => {
     const parsed = parseConventionalCommit('fix(parser): handle empty input')
     assert.deepStrictEqual(parsed, {
       rawType: 'fix',
-      label: 'Fix',
+      label: 'fix',
       scope: 'parser',
       leftSideText: '',
       rightSideText: 'handle empty input',
@@ -28,48 +28,33 @@ describe('parseConventionalCommit', () => {
   it('marks breaking changes with a trailing exclamation mark', () => {
     assert.strictEqual(
       parseConventionalCommit('feat!: drop node 16')?.label,
-      'Feat!'
+      'feat!'
     )
     assert.strictEqual(
       parseConventionalCommit('refactor(api)!: rename method')?.label,
-      'Refactor!'
+      'refactor!'
     )
   })
 
-  it('maps every recognised type to its label', () => {
-    const cases: ReadonlyArray<[string, string]> = [
-      ['feat', 'Feat'],
-      ['fix', 'Fix'],
-      ['fixes', 'Fixes'],
-      ['hotfix', 'Hotfix'],
-      ['chore', 'Chore'],
-      ['revert', 'Revert'],
-      ['style', 'Style'],
-      ['spelling', 'Spelling'],
-      ['docs', 'Docs'],
-      ['doc', 'Doc'],
-      ['build', 'Build'],
-      ['refactor', 'Refactor'],
-      ['test', 'Test'],
-      ['ci', 'CI'],
-      ['perf', 'Perf'],
-      ['deps', 'Deps'],
-      ['security', 'Security'],
-      ['release', 'Release'],
-      ['temp', 'Temp'],
-      ['wip', 'WIP'],
-      ['config', 'Config'],
-      ['infra', 'Infra'],
-      ['ops', 'Ops'],
-      ['ui', 'UI'],
-      ['ux', 'UX'],
-      ['design', 'Design'],
+  it('uses the type exactly as written as the label', () => {
+    const types = [
+      'feat',
+      'fix',
+      'chore',
+      'docs',
+      'ci',
+      'perf',
+      'wip',
+      'ui',
+      'Feat',
+      'CI',
+      'Fix',
     ]
 
-    for (const [type, label] of cases) {
+    for (const type of types) {
       const parsed = parseConventionalCommit(`${type}: do the thing`)
-      assert.strictEqual(parsed?.rawType, type)
-      assert.strictEqual(parsed?.label, label)
+      assert.strictEqual(parsed?.rawType, type.toLowerCase())
+      assert.strictEqual(parsed?.label, type)
     }
   })
 
@@ -83,14 +68,14 @@ describe('parseConventionalCommit', () => {
   it('tolerates leading whitespace before the type', () => {
     assert.deepStrictEqual(parseConventionalCommit(' fix: cache languages'), {
       rawType: 'fix',
-      label: 'Fix',
+      label: 'fix',
       scope: null,
       leftSideText: '',
       rightSideText: 'cache languages',
     })
     assert.strictEqual(
       parseConventionalCommit('\tfeat: add thing')?.label,
-      'Feat'
+      'feat'
     )
   })
 
@@ -111,7 +96,7 @@ describe('parseConventionalCommit', () => {
     })
   })
 
-  it('matches the type case-insensitively, normalising rawType to lower case', () => {
+  it('matches the type case-insensitively, normalising only rawType to lower case', () => {
     assert.deepStrictEqual(parseConventionalCommit('Feat: capitalized'), {
       rawType: 'feat',
       label: 'Feat',
@@ -121,7 +106,7 @@ describe('parseConventionalCommit', () => {
     })
     assert.deepStrictEqual(parseConventionalCommit('FIX(API)!: shouting'), {
       rawType: 'fix',
-      label: 'Fix!',
+      label: 'FIX!',
       scope: 'API',
       leftSideText: '',
       rightSideText: 'shouting',
@@ -133,7 +118,7 @@ describe('parseConventionalCommit', () => {
       parseConventionalCommit('Merge test(abc): isolate the verification flow'),
       {
         rawType: 'test',
-        label: 'Test',
+        label: 'test',
         scope: 'abc',
         leftSideText: 'Merge ',
         rightSideText: 'isolate the verification flow',
@@ -144,7 +129,7 @@ describe('parseConventionalCommit', () => {
   it('keeps the Revert prefix and opening quote as left side text', () => {
     assert.deepStrictEqual(parseConventionalCommit('Revert "feat: a thing"'), {
       rawType: 'feat',
-      label: 'Feat',
+      label: 'feat',
       scope: null,
       leftSideText: 'Revert "',
       rightSideText: 'a thing"',
@@ -158,7 +143,7 @@ describe('parseConventionalCommit', () => {
       ),
       {
         rawType: 'fix',
-        label: 'Fix',
+        label: 'fix',
         scope: null,
         leftSideText: 'Reapply "',
         rightSideText: 'don\'t cache empty commerce languages"',
@@ -171,7 +156,7 @@ describe('parseConventionalCommit', () => {
       parseConventionalCommit('fixup! fix(parser): handle empty input'),
       {
         rawType: 'fix',
-        label: 'Fix',
+        label: 'fix',
         scope: 'parser',
         leftSideText: 'fixup! ',
         rightSideText: 'handle empty input',
@@ -181,7 +166,7 @@ describe('parseConventionalCommit', () => {
       parseConventionalCommit('squash! feat(ui): add keyboard shortcut'),
       {
         rawType: 'feat',
-        label: 'Feat',
+        label: 'feat',
         scope: 'ui',
         leftSideText: 'squash! ',
         rightSideText: 'add keyboard shortcut',
@@ -191,7 +176,7 @@ describe('parseConventionalCommit', () => {
       parseConventionalCommit('amend! refactor(list): simplify row rendering'),
       {
         rawType: 'refactor',
-        label: 'Refactor',
+        label: 'refactor',
         scope: 'list',
         leftSideText: 'amend! ',
         rightSideText: 'simplify row rendering',
@@ -204,7 +189,7 @@ describe('parseConventionalCommit', () => {
       parseConventionalCommit('fixup! squash! fix(parser): handle empty input'),
       {
         rawType: 'fix',
-        label: 'Fix',
+        label: 'fix',
         scope: 'parser',
         leftSideText: 'fixup! squash! ',
         rightSideText: 'handle empty input',
@@ -217,7 +202,7 @@ describe('parseConventionalCommit', () => {
       parseConventionalCommit('fixup! Revert "feat: a thing"'),
       {
         rawType: 'feat',
-        label: 'Feat',
+        label: 'feat',
         scope: null,
         leftSideText: 'fixup! Revert "',
         rightSideText: 'a thing"',

@@ -338,6 +338,9 @@ export interface IAppState {
   /** The selected tab size preference */
   readonly selectedTabSize: number
 
+  /** Whether to show the worktree dropdown even without linked worktrees. */
+  readonly alwaysShowWorktreeList: boolean
+
   /** The number of recent repositories to show in the repository list */
   readonly recentRepositoriesCount: number
 
@@ -423,6 +426,9 @@ export interface IAppState {
 
   /** Info needed to launch a custom shell chosen by the user. */
   readonly customShell: ICustomIntegration | null
+
+  /** User-configured path to the GitHub Copilot app, or null for auto-detection. */
+  readonly copilotAppPath: string | null
 
   readonly branchPresetScript: ICustomIntegration | null
 
@@ -1009,6 +1015,8 @@ export interface ICompareBranch {
   readonly aheadBehind: IAheadBehind
 }
 
+export type TFilterAuthorListItem = { name: string; email: string }
+
 export interface ICompareState {
   /** The current state of the compare form, based on user input */
   readonly formState: IDisplayHistory | ICompareBranch
@@ -1047,6 +1055,12 @@ export interface ICompareState {
 
   /** The SHAs of commits to render in the commit graph. */
   readonly commitGraphCommitSHAs: ReadonlyArray<string>
+
+  /**
+   * The unique commit authors across the repository, for use as filter
+   * options in the history view, or null before they have been loaded.
+   */
+  readonly commitGraphFilterAuthorsList: ReadonlyArray<TFilterAuthorListItem> | null
 
   readonly compareCommitSHAs: ReadonlyArray<string>
 

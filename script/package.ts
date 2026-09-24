@@ -111,6 +111,7 @@ function packageWindows() {
     appDirectory: distPath,
     outputDirectory: outputDir,
     version: getSemverCompatibleVersion(),
+    description: productName, // Required by SignPath
     authors: getCompanyName(),
     iconUrl: iconUrl,
     setupIcon: iconSource,

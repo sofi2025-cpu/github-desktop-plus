@@ -1,50 +1,5 @@
 import { RE2JS } from 're2js'
 
-/**
- * The Conventional Commit types we recognise, in the exact capitalization shown in the badge.
- */
-const conventionalCommitTypeLabels: ReadonlyArray<string> = [
-  'Feat',
-  'Feature',
-  'Fix',
-  'Hotfix',
-  'Fixes',
-  'Chore',
-  'Revert',
-  'Style',
-  'Spelling',
-  'Docs',
-  'Doc',
-  'Documentation',
-  'Build',
-  'Refactor',
-  'Test',
-  'CI',
-  'Perf',
-  'Performance',
-  'Deps',
-  'Dependency',
-  'Dependencies',
-  'Security',
-  'Release',
-  'Temp',
-  'Tmp',
-  'WIP',
-  'Config',
-  'Configuration',
-  'Infra',
-  'Infrastructure',
-  'Ops',
-  'Operations',
-  'UI',
-  'UX',
-  'Design',
-]
-
-const conventionalCommitLabelsByType = new Map<string, string>(
-  conventionalCommitTypeLabels.map(label => [label.toLowerCase(), label])
-)
-
 const autosquashPrefixes = '(?:(?:fixup|squash|amend)!\\s+)*'
 const mergeRevertPrefix = '(?:(?:Merge|Revert|Reapply)\\s+"?)?'
 const conventionalPrefix = '(\\w+)(?:\\((.+?)\\))?(!)?: *'
@@ -101,13 +56,12 @@ export function parseConventionalCommit(
 
   // The Conventional Commits spec allows any casing for the type, normalise to lower case
   const rawType = matchedType.toLowerCase()
-  const baseLabel = conventionalCommitLabelsByType.get(rawType) ?? matchedType
 
   const isBreaking = matcher.group(4) !== null
 
   return {
     rawType,
-    label: isBreaking ? `${baseLabel}!` : baseLabel,
+    label: isBreaking ? `${matchedType}!` : matchedType,
     scope: matcher.group(3),
     leftSideText: matcher.group(1) ?? '',
     rightSideText: summary.substring(matcher.end()),

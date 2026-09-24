@@ -90,7 +90,11 @@ import {
   setTimeFormatPreference,
   setNumberFormatPreference,
 } from '../../models/formatting-preferences'
-import { enableFormattingPreferences } from '../../lib/feature-flag'
+import {
+  enableCopilotAppHandoff,
+  enableFormattingPreferences,
+} from '../../lib/feature-flag'
+import { validateCopilotAppPath } from '../../lib/copilot-app'
 
 interface IPreferencesProps {
   readonly dispatcher: Dispatcher
@@ -119,6 +123,7 @@ interface IPreferencesProps {
   readonly selectedShell: Shell
   readonly selectedTheme: ApplicationTheme
   readonly selectedTabSize: number
+  readonly alwaysShowWorktreeList: boolean
   readonly recentRepositoriesCount: number
   readonly selectedDiffFontSize: number
   readonly selectedDiffFontFamily: DiffFontFamily
@@ -126,6 +131,7 @@ interface IPreferencesProps {
   readonly customEditor: ICustomIntegration | null
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration | null
+  readonly copilotAppPath: string | null
   readonly branchPresetScript: ICustomIntegration | null
   readonly titleBarStyle: TitleBarStyle
   readonly showWorktrees: boolean
@@ -179,6 +185,8 @@ interface IPreferencesState {
   readonly customEditor: ICustomIntegration
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration
+  readonly copilotAppPath: string
+  readonly copilotAppPathError?: string
   readonly branchPresetScript: ICustomIntegration
   readonly selectedExternalEditor: string | null
   readonly availableShells: ReadonlyArray<Shell>
@@ -204,6 +212,7 @@ interface IPreferencesState {
 
   readonly initiallySelectedTheme: ApplicationTheme
   readonly initiallySelectedTabSize: number
+  readonly alwaysShowWorktreeList: boolean
   readonly initiallySelectedDiffFontSize: number
   readonly initiallySelectedDiffFontFamily: DiffFontFamily
 
@@ -262,6 +271,7 @@ export class Preferences extends React.Component<
       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell ?? DefaultCustomIntegration,
+      copilotAppPath: this.props.copilotAppPath ?? '',
       branchPresetScript:
         this.props.branchPresetScript ?? DefaultCustomIntegration,
       useWindowsOpenSSH: false,
@@ -296,6 +306,7 @@ export class Preferences extends React.Component<
       hideWindowOnQuit: this.props.hideWindowOnQuit,
       initiallySelectedTheme: this.props.selectedTheme,
       initiallySelectedTabSize: this.props.selectedTabSize,
+      alwaysShowWorktreeList: this.props.alwaysShowWorktreeList,
       initiallySelectedDiffFontSize: this.props.selectedDiffFontSize,
       initiallySelectedDiffFontFamily: this.props.selectedDiffFontFamily,
       isLoadingGitConfig: true,
@@ -390,6 +401,7 @@ export class Preferences extends React.Component<
       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell ?? DefaultCustomIntegration,
+      copilotAppPath: this.props.copilotAppPath ?? '',
       branchPresetScript:
         this.props.branchPresetScript ?? DefaultCustomIntegration,
       isLoadingGitConfig: false,
@@ -658,12 +670,15 @@ export class Preferences extends React.Component<
             customEditor={this.state.customEditor}
             useCustomShell={this.state.useCustomShell}
             customShell={this.state.customShell}
+            copilotAppPath={this.state.copilotAppPath}
+            copilotAppPathError={this.state.copilotAppPathError}
             branchPresetScript={this.state.branchPresetScript}
             onSelectedShellChanged={this.onSelectedShellChanged}
             onUseCustomEditorChanged={this.onUseCustomEditorChanged}
             onCustomEditorChanged={this.onCustomEditorChanged}
             onUseCustomShellChanged={this.onUseCustomShellChanged}
             onCustomShellChanged={this.onCustomShellChanged}
+            onCopilotAppPathChanged={this.onCopilotAppPathChanged}
             onBranchPresetScriptChanged={this.onBranchPresetScriptChanged}
             copyPathNormalization={this.state.copyPathNormalization}
             onCopyPathNormalizationChanged={this.onCopyPathNormalizationChanged}
@@ -757,6 +772,10 @@ export class Preferences extends React.Component<
             onSelectedThemeChanged={this.onSelectedThemeChanged}
             selectedTabSize={this.props.selectedTabSize}
             onSelectedTabSizeChanged={this.onSelectedTabSizeChanged}
+            alwaysShowWorktreeList={this.state.alwaysShowWorktreeList}
+            onAlwaysShowWorktreeListChanged={
+              this.onAlwaysShowWorktreeListChanged
+            }
             recentRepositoriesCount={this.state.recentRepositoriesCount}
             onRecentRepositoriesCountChanged={
               this.onRecentRepositoriesCountChanged
@@ -1072,6 +1091,10 @@ export class Preferences extends React.Component<
     this.setState({ customShell })
   }
 
+  private onCopilotAppPathChanged = (copilotAppPath: string) => {
+    this.setState({ copilotAppPath, copilotAppPathError: undefined })
+  }
+
   private onBranchPresetScriptChanged = (
     branchPresetScript: ICustomIntegration
   ) => {
@@ -1156,6 +1179,12 @@ export class Preferences extends React.Component<
     this.props.dispatcher.setSelectedTabSize(tabSize)
   }
 
+  private onAlwaysShowWorktreeListChanged = (
+    alwaysShowWorktreeList: boolean
+  ) => {
+    this.setState({ alwaysShowWorktreeList })
+  }
+
   private onSelectedDiffFontSizeChanged = (diffFontSize: number) => {
     this.props.dispatcher.setSelectedDiffFontSize(diffFontSize)
   }
@@ -1211,6 +1240,24 @@ export class Preferences extends React.Component<
 
   private onSave = async () => {
     const { dispatcher } = this.props
+    const copilotAppPath = this.state.copilotAppPath.trim()
+    const initialCopilotAppPath = this.props.copilotAppPath?.trim() ?? ''
+    const copilotAppPathChanged = copilotAppPath !== initialCopilotAppPath
+
+    if (
+      enableCopilotAppHandoff() &&
+      copilotAppPathChanged &&
+      copilotAppPath.length > 0 &&
+      !(await validateCopilotAppPath(copilotAppPath))
+    ) {
+      this.setState({
+        selectedIndex: PreferencesTab.Integrations,
+        copilotAppPathError: __DARWIN__
+          ? 'Choose the GitHub Copilot application (.app).'
+          : 'Choose the GitHub Copilot executable (github.exe).',
+      })
+      return
+    }
 
     try {
       let shouldRefreshAuthor = false
@@ -1366,6 +1413,12 @@ export class Preferences extends React.Component<
       dispatcher.setCustomShell(customShell)
     }
 
+    if (enableCopilotAppHandoff() && copilotAppPathChanged) {
+      await dispatcher.setCopilotAppPath(
+        copilotAppPath.length === 0 ? null : copilotAppPath
+      )
+    }
+
     const isValidBranchPresetScript =
       branchPresetScript && (await isValidCustomIntegration(branchPresetScript))
     if (isValidBranchPresetScript) {
@@ -1426,6 +1479,7 @@ export class Preferences extends React.Component<
     dispatcher.setUnderlineLinksSetting(this.state.underlineLinks)
 
     dispatcher.setDiffCheckMarksSetting(this.state.showDiffCheckMarks)
+    dispatcher.setAlwaysShowWorktreeList(this.state.alwaysShowWorktreeList)
 
     dispatcher.setShowBranchNameInRepoList(this.state.showBranchNameInRepoList)
     dispatcher.setBranchSortOrder(this.state.branchSortOrder)

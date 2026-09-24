@@ -39,7 +39,6 @@ import {
   isPublishable,
 } from './dist-info'
 
-import assert from 'assert'
 import {
   cpSync,
   existsSync,
@@ -50,11 +49,12 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs'
-import { join } from 'path'
 import { updateLicenseDump } from './licenses/update-license-dump'
-import { removeCurlVersionRequirements } from './remove-curl-version-requirements'
 import { verifyInjectedSassVariables } from './validate-sass/validate-all'
+import { join } from 'path'
+import assert from 'assert'
 import { copyCopilotDependency } from './copilot'
+import { removeCurlVersionRequirements } from './remove-curl-version-requirements'
 import { pruneCopilotDependency } from './copilot-prune'
 
 // Always use ad-hoc code signing ('-'), even for published builds, to avoid "app is damaged" error.
