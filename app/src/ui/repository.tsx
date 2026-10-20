@@ -58,6 +58,10 @@ interface IRepositoryViewProps {
   readonly showSideBySideDiff: boolean
   readonly showDiffMinimap: boolean
   readonly wrapDiffLines: boolean
+  readonly fileTreeView: boolean
+
+  /** Whether the list/tree and list/graph view mode switches are shown */
+  readonly showViewModeSwitches: boolean
   readonly showDiffCheckMarks: boolean
   readonly preferAbsoluteDates: boolean
   readonly showConventionalCommitBadges: boolean
@@ -398,6 +402,8 @@ export class RepositoryView extends React.Component<
         showCommitLengthWarning={this.props.showCommitLengthWarning}
         showCommitAuthorInfo={this.props.showCommitAuthorInfo}
         showChangesFilter={this.props.showChangesFilter}
+        fileTreeView={this.props.fileTreeView}
+        showViewModeSwitches={this.props.showViewModeSwitches}
         skipCommitHooks={this.props.skipCommitHooks}
         signOffCommits={this.props.signOffCommits}
         allowEmptyCommit={this.props.allowEmptyCommit}
@@ -462,6 +468,7 @@ export class RepositoryView extends React.Component<
         isMultiCommitOperationInProgress={mcos !== null}
         preferAbsoluteDates={this.props.preferAbsoluteDates}
         showConventionalCommitBadges={this.props.showConventionalCommitBadges}
+        showViewModeSwitches={this.props.showViewModeSwitches}
         askForConfirmationOnCheckoutCommit={
           this.props.askForConfirmationOnCheckoutCommit
         }
@@ -610,6 +617,7 @@ export class RepositoryView extends React.Component<
           showSideBySideDiff={this.props.showSideBySideDiff}
           showDiffMinimap={this.props.showDiffMinimap}
           wrapDiffLines={this.props.wrapDiffLines}
+          fileTreeView={this.props.fileTreeView}
           onOpenBinaryFile={this.onOpenBinaryFile}
           onOpenSubmodule={this.onOpenSubmodule}
           onChangeImageDiffType={this.onChangeImageDiffType}
@@ -667,6 +675,7 @@ export class RepositoryView extends React.Component<
         showSideBySideDiff={this.props.showSideBySideDiff}
         showDiffMinimap={this.props.showDiffMinimap}
         wrapDiffLines={this.props.wrapDiffLines}
+        fileTreeView={this.props.fileTreeView}
         onOpenBinaryFile={this.onOpenBinaryFile}
         onOpenSubmodule={this.onOpenSubmodule}
         onChangeImageDiffType={this.onChangeImageDiffType}
@@ -844,9 +853,13 @@ export class RepositoryView extends React.Component<
       this.commitGraphSidebarRef.current?.focusHistory()
     }
 
-    if (this.focusCompareNeeded) {
+    // Changing sections is asynchronous, so wait until the Compare sidebar is actually rendered
+    if (
+      this.focusCompareNeeded &&
+      this.props.state.selectedSection === RepositorySectionTab.Compare
+    ) {
       this.focusCompareNeeded = false
-      this.compareSidebarRef.current?.focusHistory()
+      this.compareSidebarRef.current?.focusBranchFilter()
     }
   }
 
@@ -879,6 +892,13 @@ export class RepositoryView extends React.Component<
     if (section === RepositorySectionTab.Changes) {
       this.focusChangesNeeded = true
     }
+    this.focusCompareNeeded = section === RepositorySectionTab.Compare
+    if (section === RepositorySectionTab.Compare) {
+      this.props.dispatcher.updateCompareForm(this.props.repository, {
+        filterText: '',
+        showBranchList: true,
+      })
+    }
   }
 
   private onTabClicked = (tab: Tab) => {
@@ -891,6 +911,7 @@ export class RepositoryView extends React.Component<
     if (section === RepositorySectionTab.Changes) {
       this.focusChangesNeeded = true
     }
+    this.focusCompareNeeded = section === RepositorySectionTab.Compare
     if (!!section) {
       this.props.dispatcher.updateCompareForm(this.props.repository, {
         filterText: '',

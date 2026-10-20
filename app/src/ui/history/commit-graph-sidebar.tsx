@@ -83,6 +83,7 @@ interface ICommitGraphSidebarProps {
   readonly accounts: ReadonlyArray<Account>
   readonly preferAbsoluteDates: boolean
   readonly showConventionalCommitBadges: boolean
+  readonly showViewModeSwitches: boolean
 }
 
 interface ICommitGraphSidebarState {
@@ -565,6 +566,16 @@ export class CommitGraphSidebar extends React.Component<
   public componentDidMount() {
     this.commitGraph_ensureLoaded()
 
+    // A search made in graph mode doesn't filter the list, so catch it up
+    const { commitSearchQuery, filteredHistoryCommitSearchQuery } =
+      this.props.compareState
+    if (
+      this.state.commitGraphViewMode === CommitHistoryViewMode.List &&
+      commitSearchQuery !== filteredHistoryCommitSearchQuery
+    ) {
+      void this.onSearchList(commitSearchQuery)
+    }
+
     // Lazy-load authors when the search box is focused, unless the query already relies on them
     if (
       this.props.compareState.commitSearchQuery
@@ -625,8 +636,12 @@ export class CommitGraphSidebar extends React.Component<
   }
 
   private commitGraph_renderViewModeSwitch() {
+    if (!this.props.showViewModeSwitches) {
+      return null
+    }
+
     return (
-      <div className="commitGraph-view-mode-switch button-group">
+      <div className="commitGraph-view-mode-switch view-mode-switch button-group">
         <Button
           size="small"
           className={classNames('button-group-item', {

@@ -4,6 +4,15 @@ import { Branch } from './branch'
 import { Commit, CommitOneLine, ICommitContext } from './commit'
 import { WorkingDirectoryFileChange } from './status'
 import { IStashEntry } from './stash-entry'
+import { IRemote } from './remote'
+
+/** A remote to push to instead of the one tracked by the current branch. */
+export interface IPushTarget {
+  readonly remote: IRemote
+
+  /** Whether the current branch should track the pushed branch from now on */
+  readonly setUpstream: boolean
+}
 
 /** The types of actions that can be retried. */
 export enum RetryActionType {
@@ -27,6 +36,11 @@ export enum RetryActionType {
 /** The retriable actions and their associated data. */
 export type RetryAction =
   | { type: RetryActionType.Push; repository: Repository }
+  | {
+      type: RetryActionType.Push
+      repository: Repository
+      pushTarget: IPushTarget
+    }
   | { type: RetryActionType.Pull; repository: Repository }
   | { type: RetryActionType.Fetch; repository: Repository }
   | {

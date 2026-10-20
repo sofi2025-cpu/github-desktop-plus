@@ -162,6 +162,8 @@ import { CommitDragElement } from './drag-elements/commit-drag-element'
 import classNames from 'classnames'
 import { MoveToApplicationsFolder } from './move-to-applications-folder'
 import { ChangeRepositoryAlias } from './change-repository-alias/change-repository-alias-dialog'
+import { SnoozeRepository } from './snooze-repository/snooze-repository-dialog'
+import { SnoozedRepositoriesDialog } from './snoozed-repositories/snoozed-repositories-dialog'
 import { CreateRepositoryGroup } from './create-repository-group/create-repository-group-dialog'
 import { DeleteRepositoryGroup } from './delete-repository-group/delete-repository-group-dialog'
 import { ThankYou } from './thank-you'
@@ -220,6 +222,7 @@ import { ConfirmCommitFilteredChanges } from './changes/confirm-commit-filtered-
 import { AboutTestDialog } from './about/about-test-dialog'
 import { TestCLIActionDialog } from './cli-action/test-cli-action-dialog'
 import { TestCopilotSnapshotCardDialog } from './preferences/test-copilot-snapshot-card-dialog'
+import { TestTokenExpirationDialog } from './preferences/test-token-expiration-dialog'
 import {
   enableCopilotSdkCommitMessageGeneration,
   enableCopilotAppHandoff,
@@ -251,8 +254,9 @@ import { DeleteWorktreeFailedDialog } from './worktrees/delete-worktree-failed-d
 import { PullBranchDeletedDialog } from './pull-branch-deleted/pull-branch-deleted-dialog'
 import { ManageRemotesDialog } from './manage-remotes/manage-remotes-dialog'
 import { AddRemoteDialog } from './manage-remotes/add-remote-dialog'
+import { PushToRemoteDialog } from './push-to-remote/push-to-remote-dialog'
 import { getEditorOverrideLabel } from '../models/editor-override'
-import { WorktreeEntry } from '../models/worktree'
+import { IDeleteWorktreeOptions, WorktreeEntry } from '../models/worktree'
 import { shouldShowWorktreeDropdown } from '../lib/worktree-dropdown'
 
 const MinuteInMilliseconds = 1000 * 60
@@ -535,7 +539,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         )
         return this.updateBranchWithContributionTargetBranch()
       case 'compare-to-branch':
-        return this.showCompare(false)
+        return this.showCompare(true)
       case 'merge-branch':
         this.props.dispatcher.recordMenuInitiatedMerge()
         return this.mergeBranch()
@@ -603,6 +607,8 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.resizeActiveResizable('decrease-active-resizable-width')
       case 'toggle-changes-filter':
         return this.toggleChangesFilterVisibility()
+      case 'toggle-view-mode-switches':
+        return this.props.dispatcher.toggleViewModeSwitchesVisibility()
       default:
         if (isTestMenuEvent(name)) {
           return showTestUI(
@@ -1004,9 +1010,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       RepositorySectionTab.History
     )
 
-    this.props.dispatcher.updateCompareForm(state.repository, {
-      commitSearchQuery: '',
-    })
+    this.props.dispatcher.setCommitSearchQuery(state.repository, '')
 
     if (shouldFocusHistory) {
       this.repositoryViewRef.current?.setFocusHistoryNeeded()
@@ -2637,6 +2641,25 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
+      case PopupType.SnoozeRepository: {
+        return (
+          <SnoozeRepository
+            dispatcher={this.props.dispatcher}
+            repository={popup.repository}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
+      case PopupType.SnoozedRepositories: {
+        return (
+          <SnoozedRepositoriesDialog
+            dispatcher={this.props.dispatcher}
+            repositories={this.state.repositories}
+            snoozedRepositories={this.state.snoozedRepositories}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
       case PopupType.ThankYou:
         return (
           <ThankYou
@@ -3134,6 +3157,15 @@ export class App extends React.Component<IAppProps, IAppState> {
             onDismissed={onPopupDismissedFn}
           />
         )
+      case PopupType.TestTokenExpiration:
+        return (
+          <TestTokenExpirationDialog
+            key="test-token-expiration"
+            accounts={this.state.accounts}
+            dispatcher={this.props.dispatcher}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
       case PopupType.PushProtectionError:
         return (
           <PushProtectionErrorDialog
@@ -3295,6 +3327,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="delete-worktree"
             repository={popup.repository}
             worktreePath={popup.worktreePath}
+            options={popup.options}
             askForConfirmationOnWorktreeRemoval={
               this.state.askForConfirmationOnWorktreeRemoval
             }
@@ -3314,6 +3347,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             worktreePath={popup.worktreePath}
             error={popup.error}
             originalWorktree={popup.originalWorktree}
+            options={popup.options}
             onDeleteWorktree={this.onDeleteWorkTree}
             onSwitchToWorktree={this.onSwitchToWorktree}
             onDismissed={onPopupDismissedFn}
@@ -3350,6 +3384,27 @@ export class App extends React.Component<IAppProps, IAppState> {
             onDismissed={onPopupDismissedFn}
           />
         )
+      case PopupType.PushToRemote: {
+        const { tip } = this.props.repositoryStateManager.get(
+          popup.repository
+        ).branchesState
+
+        if (tip.kind !== TipState.Valid) {
+          onPopupDismissedFn()
+          return null
+        }
+
+        return (
+          <PushToRemoteDialog
+            key="push-to-remote"
+            repository={popup.repository}
+            remotes={popup.remotes}
+            branch={tip.branch}
+            dispatcher={this.props.dispatcher}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
       default:
         return assertNever(popup, `Unknown popup type: ${popup}`)
     }
@@ -3365,9 +3420,13 @@ export class App extends React.Component<IAppProps, IAppState> {
   private onDeleteWorkTree = (
     repository: Repository,
     worktreePath: string,
-    force?: boolean
+    options?: IDeleteWorktreeOptions
   ) => {
-    return this.props.dispatcher.deleteWorktree(repository, worktreePath, force)
+    return this.props.dispatcher.deleteWorktree(
+      repository,
+      worktreePath,
+      options
+    )
   }
 
   private onConfirmWorktreeRemovalChanged = (value: boolean) => {
@@ -3697,6 +3756,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         onSelectionChanged={this.onSelectionChanged}
         repositories={repositories}
         recentRepositories={this.state.recentRepositories}
+        snoozedRepositories={this.state.snoozedRepositories}
         localRepositoryStateLookup={this.state.localRepositoryStateLookup}
         askForConfirmationOnRemoveRepository={
           this.state.askForConfirmationOnRepositoryRemoval
@@ -4014,8 +4074,16 @@ export class App extends React.Component<IAppProps, IAppState> {
       this.showWorktrees()
     }
 
+    const onSnoozeRepository = (repository: Repository) => {
+      this.props.dispatcher.showPopup({
+        type: PopupType.SnoozeRepository,
+        repository,
+      })
+    }
+
     const items = generateRepositoryListContextMenu({
       onRemoveRepository: this.removeRepository,
+      onSnoozeRepository: onSnoozeRepository,
       onShowRepository: this.showRepository,
       onOpenInShell: this.openInShell,
       onOpenInExternalEditor: this.openInExternalEditor,
@@ -4431,6 +4499,8 @@ export class App extends React.Component<IAppProps, IAppState> {
           showSideBySideDiff={state.showSideBySideDiff}
           showDiffMinimap={state.showDiffMinimap}
           wrapDiffLines={state.wrapDiffLines}
+          fileTreeView={state.fileTreeView}
+          showViewModeSwitches={state.showViewModeSwitches}
           focusCommitMessage={state.focusCommitMessage}
           askForConfirmationOnDiscardChanges={
             state.askForConfirmationOnDiscardChanges

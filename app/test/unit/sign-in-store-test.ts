@@ -41,8 +41,6 @@ function createDotComAccount(login = 'octocat'): Account {
     getDotComAPIEndpoint(),
     'dotcom',
     'test-token',
-    '',
-    0,
     [],
     'https://avatars.githubusercontent.com/u/1',
     1,
@@ -60,8 +58,6 @@ function createEnterpriseAccount(
     endpoint,
     'enterprise',
     'ent-token',
-    '',
-    0,
     [],
     '',
     2,
@@ -75,7 +71,7 @@ function createSelfHostedAccount(
   endpoint: string,
   apiType: SelfHostedApiType
 ): Account {
-  return new Account(login, endpoint, apiType, 'pat', '', 0, [], '', 3, login)
+  return new Account(login, endpoint, apiType, 'pat', [], '', 3, login)
 }
 
 /** Serve every request from the given handler for the duration of `fn`. */
@@ -578,8 +574,22 @@ describe('SignInStore', () => {
         assert.equal(account.apiType, 'gitlab')
         assert.equal(account.endpoint, 'https://git.example.com/api/v4')
         assert.equal(account.token, 'pat-1234')
-        assert.equal(account.refreshToken, '')
+        assert.ok(!accountsStore.isRefreshable(account))
+        assert.deepEqual(await accountsStore.getAll(), [account])
       }
+    })
+
+    it('reports an error without signing in when the account cannot be saved', async t => {
+      t.mock.method(accountsStore, 'addAccount', async () => null)
+      const results = await signIn('gitlab', 'https://git.example.com')
+
+      const state = signInStore.getState()
+      assert.equal(state?.kind, SignInStep.TokenEntry)
+      if (state?.kind === SignInStep.TokenEntry) {
+        assert.match(state.error?.message ?? '', /Unable to save/)
+        assert.equal(state.loading, false)
+      }
+      assert.deepEqual(results, [])
     })
 
     it('signs in to Forgejo with a personal access token', async () => {
@@ -597,12 +607,6 @@ describe('SignInStore', () => {
     })
 
     it('registers the instance so its web URLs resolve', async () => {
-      // The account lands in the registry through AccountsStore, exactly as it
-      // does in the app through AppStore's onDidAuthenticate handler.
-      signInStore.onDidAuthenticate(account => {
-        accountsStore.addAccount(account)
-      })
-
       const results = await signIn('forgejo', 'https://git.example.com:3000')
       const [result] = results
       assert.equal(result?.kind, 'success')

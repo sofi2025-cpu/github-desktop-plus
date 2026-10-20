@@ -12,12 +12,14 @@ import {
   getCredentialUrl,
   getIsBackgroundTaskEnvironment,
   getTrampolineEnvironmentPath,
+  holdCredentialLease,
   setHasRejectedCredentialsForEndpoint,
 } from './trampoline-environment'
 import { useExternalCredentialHelper } from './use-external-credential-helper'
 import {
   findGenericTrampolineAccount,
   findGitHubTrampolineAccount,
+  isAccountForRemote,
 } from './find-account'
 import { IGitAccount } from '../../models/git-account'
 import {
@@ -33,6 +35,8 @@ import {
   isAccountCredential,
   rememberAccountCredential,
 } from './third-party-git-auth'
+import { AccountRequiresSignInError } from '../credential-sessions'
+import { Account } from '../../models/account'
 
 type Credential = Map<string, string>
 type Store = AccountsStore
@@ -52,20 +56,48 @@ const error = (msg: string, e: any) => log.error(`credential-helper: ${msg}`, e)
 const credWithAccount = (c: Credential, a: IGitAccount | undefined) =>
   a && new Map(c).set('username', a.login).set('password', a.token)
 
+/**
+ * @param signedIn An account the user just signed in to in order to answer
+ *                 this request, used instead of looking one up.
+ */
 async function getGitHubCredential(
   cred: Credential,
   store: AccountsStore,
-  token: string
+  token: string,
+  signedIn?: Account
 ) {
   const endpoint = `${getCredentialUrl(cred)}`
-  const login = await getLogin(cred, token)
-  const account = await findGitHubTrampolineAccount(store, endpoint, login)
+  // The sign-in dialog lets the user change the host, and this account's
+  // token must never be sent to another one.
+  if (signedIn !== undefined && !isAccountForRemote(signedIn, endpoint)) {
+    info(`signed in to a different host than ${endpoint}`)
+    return undefined
+  }
+  const account =
+    signedIn ??
+    (await findGitHubTrampolineAccount(
+      store,
+      endpoint,
+      await getLogin(cred, token)
+    ))
   if (account) {
     info(`found GitHub credential for ${endpoint} in store`)
-    rememberAccountCredential(token, getCredentialUrl(cred))
-    return credWithAccount(cred, await accountToGitCredential(account))
+    try {
+      // Git LFS asks again under its parent Git's trampoline token, so it
+      // gets the token that process holds instead of waiting for it.
+      const lease = await store.leaseAccountToken(account, token)
+      holdCredentialLease(token, lease.release)
+      rememberAccountCredential(token, getCredentialUrl(cred))
+      return credWithAccount(cred, accountToGitCredential(lease.account))
+    } catch (e) {
+      if (!(e instanceof AccountRequiresSignInError)) {
+        throw e
+      }
+      // Fall through to the same path as having no account for the host.
+      info(`GitHub credential for ${endpoint} requires sign in`)
+    }
   }
-  return credWithAccount(cred, account)
+  return undefined
 }
 
 async function promptForCredential(cred: Credential, endpoint: string) {
@@ -136,7 +168,8 @@ async function getCredential(cred: Credential, store: Store, token: string) {
       setHasRejectedCredentialsForEndpoint(token, endpoint)
     }
 
-    return credWithAccount(cred, account)
+    // Lease and convert the new account's token like any other account's.
+    return account && getGitHubCredential(cred, store, token, account)
   }
 
   // GitHub.com/GHE creds are only stored internally

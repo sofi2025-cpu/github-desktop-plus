@@ -56,6 +56,14 @@ export const getGroupKey = (group: RepositoryListGroup) => {
       assertNever(group, `Unknown repository group kind ${kind}`)
   }
 }
+
+/** Returns the value groups are sorted by in their default order */
+const getGroupSortKey = (groupKey: string) => groupKey.toLowerCase()
+
+/** Compares two group keys in the order the groups are displayed by default */
+const compareGroupKeys = (x: string, y: string) =>
+  compare(getGroupSortKey(x), getGroupSortKey(y))
+
 export type Repositoryish = Repository | CloningRepository
 
 export interface IRepositoryListItem extends IFilterListItem {
@@ -138,7 +146,7 @@ export function groupRepositories(
   }
 
   return Array.from(groups)
-    .sort(([xKey], [yKey]) => compare(xKey.toLowerCase(), yKey.toLowerCase()))
+    .sort(([xKey], [yKey]) => compareGroupKeys(xKey, yKey))
     .map(([, { group, repos }]) => ({
       identifier: group,
       items: toSortedListItems(
@@ -327,4 +335,156 @@ export function filterPinnedFromGroups(
       items: group.items.filter(item => !pinnedIdSet.has(item.repository.id)),
     }))
     .filter(group => group.items.length > 0)
+}
+
+export function isReorderableRepositoryGroup(group: RepositoryListGroup) {
+  return group.kind !== 'pins' && group.kind !== 'recent'
+}
+
+/**
+ * Reorders the groups according to the order saved by the user.
+ */
+export function applyRepositoryGroupOrder<
+  T extends { readonly identifier: RepositoryListGroup }
+>(
+  groups: ReadonlyArray<T>,
+  savedOrder: ReadonlyArray<string>
+): ReadonlyArray<T> {
+  if (savedOrder.length === 0) {
+    return groups
+  }
+
+  const savedIndices = getFirstIndices(savedOrder)
+
+  const fixedGroups = groups.filter(
+    group => !isReorderableRepositoryGroup(group.identifier)
+  )
+  const reorderableGroups = groups
+    .filter(group => isReorderableRepositoryGroup(group.identifier))
+    .map(group => {
+      const key = getGroupKey(group.identifier)
+      return {
+        group,
+        sortKey: getGroupSortKey(key),
+        savedIndex: savedIndices.get(key),
+      }
+    })
+
+  const ordered = reorderableGroups
+    .filter(entry => entry.savedIndex !== undefined)
+    .sort((x, y) => x.savedIndex! - y.savedIndex!)
+
+  for (const entry of reorderableGroups) {
+    if (entry.savedIndex !== undefined) {
+      continue
+    }
+
+    // Ties count as sorting before, so keys that only differ in case keep
+    // their default relative order.
+    const predecessorIndex = ordered.findLastIndex(
+      other => compare(other.sortKey, entry.sortKey) <= 0
+    )
+    ordered.splice(predecessorIndex + 1, 0, entry)
+  }
+
+  return [...fixedGroups, ...ordered.map(entry => entry.group)]
+}
+
+/**
+ * Returns the group order that results from moving a group before or after
+ * another one, or `savedOrder` itself if the displayed order wouldn't change.
+ *
+ * The result also contains the saved keys of groups that aren't currently displayed,
+ * so they get their previous position back when/if they reappear.
+ */
+export function moveRepositoryGroupInOrder(
+  savedOrder: ReadonlyArray<string>,
+  displayedKeys: ReadonlyArray<string>,
+  movedKey: string,
+  targetKey: string,
+  position: 'before' | 'after'
+): ReadonlyArray<string> {
+  const displayed = [...new Set(displayedKeys)]
+  if (
+    movedKey === targetKey ||
+    !displayed.includes(movedKey) ||
+    !displayed.includes(targetKey)
+  ) {
+    return savedOrder
+  }
+
+  const order = [...displayed]
+  for (const [index, key] of savedOrder.entries()) {
+    if (order.includes(key)) {
+      continue
+    }
+
+    const predecessor = savedOrder
+      .slice(0, index)
+      .reverse()
+      .find(k => order.includes(k))
+    order.splice(
+      predecessor === undefined ? 0 : order.indexOf(predecessor) + 1,
+      0,
+      key
+    )
+  }
+
+  order.splice(order.indexOf(movedKey), 1)
+  const targetIndex = order.indexOf(targetKey)
+  order.splice(
+    position === 'before' ? targetIndex : targetIndex + 1,
+    0,
+    movedKey
+  )
+
+  const displayedSet = new Set(displayed)
+  const newDisplayed = order.filter(key => displayedSet.has(key))
+  return newDisplayed.every((key, i) => key === displayed[i])
+    ? savedOrder
+    : order
+}
+
+export interface IRepositoryGroupDropTarget {
+  readonly groupKey: string
+  readonly position: 'before' | 'after'
+}
+
+export function getRepositoryGroupDropBoundary(
+  displayedKeys: ReadonlyArray<string>,
+  target: IRepositoryGroupDropTarget
+): IRepositoryGroupDropTarget {
+  if (target.position === 'before') {
+    return target
+  }
+
+  const index = displayedKeys.indexOf(target.groupKey)
+  const nextKey = index < 0 ? undefined : displayedKeys.at(index + 1)
+  return nextKey === undefined
+    ? target
+    : { groupKey: nextKey, position: 'before' }
+}
+
+export function areRepositoryGroupDropTargetsEqual(
+  x: IRepositoryGroupDropTarget | null,
+  y: IRepositoryGroupDropTarget | null
+) {
+  return (
+    x === y ||
+    (x !== null &&
+      y !== null &&
+      x.groupKey === y.groupKey &&
+      x.position === y.position)
+  )
+}
+
+/** Maps each value to the index of its first occurrence in the array. */
+function getFirstIndices(values: ReadonlyArray<string>) {
+  const indices = new Map<string, number>()
+  for (const [index, value] of values.entries()) {
+    if (!indices.has(value)) {
+      indices.set(value, index)
+    }
+  }
+  return indices
 }

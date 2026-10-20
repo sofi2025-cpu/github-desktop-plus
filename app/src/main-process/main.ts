@@ -38,6 +38,7 @@ import { showUncaughtException } from './show-uncaught-exception'
 import { buildContextMenu } from './menu/build-context-menu'
 import { OrderedWebRequest } from './ordered-webrequest'
 import { installAuthenticatedImageFilter } from './authenticated-image-filter'
+import { createAuthenticatedImageTokenResolver } from './authenticated-image-token-resolver'
 import { installAliveOriginFilter } from './alive-origin-filter'
 import { installSameOriginFilter } from './same-origin-filter'
 import * as ipcMain from './ipc-main'
@@ -389,7 +390,7 @@ async function handleCommandLineArguments(argv: string[]): Promise<boolean> {
         try {
           new URL(arg)
           return true
-        } catch (e) {
+        } catch {
           log.error(`Unable to parse argument as URL: ${arg}`)
         }
       }
@@ -508,7 +509,14 @@ app.on('ready', () => {
 
   // Adds an authorization header for requests of avatars on GHES and private
   // repo assets
-  const updateAccounts = installAuthenticatedImageFilter(orderedWebRequest)
+  // Every window has its own account store; let the oldest one resolve tokens.
+  const imageTokenResolver = createAuthenticatedImageTokenResolver(
+    () => getAppWindows().at(0)?.webContents
+  )
+  const updateAccounts = installAuthenticatedImageFilter(
+    orderedWebRequest,
+    imageTokenResolver.resolveToken
+  )
 
   Menu.setApplicationMenu(
     buildDefaultMenu({
@@ -521,7 +529,16 @@ app.on('ready', () => {
     })
   )
 
-  ipcMain.on('update-accounts', (_, accounts) => updateAccounts(accounts))
+  ipcMain.on('update-accounts', (event, accounts) => {
+    if (getAppWindowFromWebContents(event.sender) === null) {
+      return
+    }
+    imageTokenResolver.updateAccounts(accounts)
+    updateAccounts(accounts)
+  })
+  ipcMain.on('resolved-image-token', (event, requestId, token) => {
+    imageTokenResolver.acceptResponse(event.sender, requestId, token)
+  })
 
   ipcMain.on('update-preferred-app-menu-item-labels', (event, labels) => {
     if (!shouldHandleMenuUpdate(event.sender)) {
@@ -730,6 +747,10 @@ app.on('ready', () => {
 
   ipcMain.on('close-window', event =>
     getAppWindowFromWebContents(event.sender)?.closeWindow()
+  )
+
+  ipcMain.on('set-title-bar-overlay-height', (event, height: number) =>
+    getAppWindowFromWebContents(event.sender)?.setTitleBarOverlayHeight(height)
   )
 
   ipcMain.handle(

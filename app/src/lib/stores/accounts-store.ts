@@ -1,6 +1,11 @@
 import { IDataStore, ISecureStore } from './stores'
 import { getKeyForAccount } from '../auth'
-import { Account, AccountAPIType, isDotComAccount } from '../../models/account'
+import {
+  Account,
+  AccountAPIType,
+  isDotComAccount,
+  UnknownLogin,
+} from '../../models/account'
 import {
   fetchUser,
   EmailVisibility,
@@ -22,6 +27,31 @@ import {
   tryGetHost,
   unregisterHost,
 } from '../endpoint-api-type-registry'
+import { Disposable } from 'event-kit'
+import {
+  renewAccountToken,
+  revokeAccountToken,
+  RevocableToken,
+} from '../third-party-oauth-token'
+import { IOAuthToken } from '../oauth-token'
+import { deserializeAccountCredential } from '../account-credential'
+import {
+  AccountRequiresSignInError,
+  CredentialSessions,
+  IAccountTokenExpiration,
+  TokenRefreshEvent,
+  refreshMargin,
+} from '../credential-sessions'
+import { ChunkedSecureStore } from './chunked-secure-store'
+import {
+  getPersistedUserKey,
+  hasLegacyCredentialFields,
+  ILegacyCredentialFields,
+  migrateLegacyCredential,
+  parsePersistedUsers,
+  PersistedUsers,
+  withPersistedUsers,
+} from './legacy-account-credential'
 
 // Ensure that GitHub.com accounts appear first followed by Enterprise
 // accounts, sorted by the order in which they were added.
@@ -36,6 +66,9 @@ const sortAccounts = (accounts: ReadonlyArray<Account>) =>
         ) || compare(xIx, yIx)
     )
     .map(([account]) => account)
+
+const isSameSignIn = (x: Account, y: Account) =>
+  x.endpoint === y.endpoint && x.login === y.login
 
 /** The data-only interface for storage. */
 interface IEmail {
@@ -66,13 +99,19 @@ function isKeyChainError(e: any) {
   )
 }
 
+function isMissingSecretServiceError(e: unknown) {
+  return (
+    e instanceof Error &&
+    (e.message.includes('org.freedesktop.secrets') ||
+      e.message.includes('The name is not activatable'))
+  )
+}
+
 /** The data-only interface for storage. */
-interface IAccount {
+interface IAccount extends ILegacyCredentialFields {
   readonly token: string
   readonly login: string
   readonly endpoint: string
-  readonly refreshToken: string
-  readonly tokenExpiresAt: number
   readonly emails: ReadonlyArray<IEmail>
   readonly avatarURL: string
   readonly id: number
@@ -129,15 +168,43 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   private secureStore: ISecureStore
 
   private accounts: ReadonlyArray<Account> = []
+  private readonly credentials: CredentialSessions
+  /** Sign-in keys whose legacy refresh token could not be saved securely yet. */
+  private readonly pendingLegacyCredentials = new Set<string>()
+  /**
+   * Persisted `users` keys this window wrote for its own accounts. Other
+   * entries were written by other app windows and are kept.
+   */
+  private ownUserKeys = new Set<string>()
 
   /** A promise that will resolve when the accounts have been loaded. */
   private loadingPromise: Promise<void>
 
-  public constructor(dataStore: IDataStore, secureStore: ISecureStore) {
+  public constructor(
+    dataStore: IDataStore,
+    secureStore: ISecureStore,
+    renewToken = renewAccountToken,
+    now = Date.now,
+    revokeToken = revokeAccountToken
+  ) {
     super()
+    secureStore = new ChunkedSecureStore(secureStore)
 
     this.dataStore = dataStore
     this.secureStore = secureStore
+    this.credentials = new CredentialSessions(
+      secureStore,
+      {
+        requireSignIn: this.requireSignIn,
+        onTokenRenewed: this.onTokenRenewed,
+        onSignedIn: this.onSignedIn,
+        onRemovedElsewhere: this.onRemovedElsewhere,
+        onTokenRefreshEvent: event => this.emitter.emit('token-refresh', event),
+      },
+      renewToken,
+      now,
+      revokeToken
+    )
     this.loadingPromise = this.loadFromStore()
   }
 
@@ -148,6 +215,190 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     await this.loadingPromise
 
     return this.accounts.slice()
+  }
+
+  /** Notify once per account when invalid credentials sign it out. */
+  public onTokenInvalidated(callback: (account: Account) => void): Disposable {
+    return this.emitter.on('token-invalidated', callback)
+  }
+
+  /** Subscribe to credential-free renewal events, excluding debug overrides. */
+  public onTokenRefreshEvent(
+    callback: (event: TokenRefreshEvent) => void
+  ): Disposable {
+    return this.emitter.on('token-refresh', callback)
+  }
+
+  /** Handle a rejected API token without leaving unhandled callback errors. */
+  public handleTokenInvalidated = (endpoint: string, token: string): void => {
+    void this.invalidateToken(endpoint, token).catch(error => {
+      log.error('Unable to invalidate rejected GitHub credentials', error)
+      this.emitError(error)
+    })
+  }
+
+  /** Resolve token snapshots held by long-lived clients without changing identity. */
+  public resolveToken = async (
+    endpoint: string,
+    token: string,
+    login?: string | UnknownLogin
+  ): Promise<string> => {
+    await this.loadingPromise
+    return this.credentials.resolveToken(
+      endpoint,
+      token,
+      typeof login === 'string' ? login : undefined
+    )
+  }
+
+  /** Get the current credential for an account before handing it to another consumer. */
+  public async getAccountWithFreshToken(
+    account: Account,
+    minimumValidity = refreshMargin
+  ): Promise<Account> {
+    await this.loadingPromise
+    const token = await this.credentials.getFreshToken(account, minimumValidity)
+    const current = this.accounts.find(a => isSameSignIn(a, account))
+    if (current === undefined || current.id !== account.id) {
+      throw new AccountRequiresSignInError()
+    }
+    return this.credentials.inheritSession(current, current.withToken(token))
+  }
+
+  /**
+   * Get the account's credential for `holder`, holding off renewal of that
+   * token until the lease is released. See `CredentialSessions.leaseToken`.
+   *
+   * Leases only hold off renewal in this window; another window may still
+   * renew, and so revoke, a leased token near expiry.
+   */
+  public async leaseAccountToken(
+    account: Account,
+    holder: string
+  ): Promise<{ readonly account: Account; readonly release: () => void }> {
+    await this.loadingPromise
+    const lease = await this.credentials.leaseToken(account, holder)
+    const current = this.accounts.find(a => isSameSignIn(a, account))
+    if (current === undefined || current.id !== account.id) {
+      lease.release()
+      throw new AccountRequiresSignInError()
+    }
+    return {
+      account: this.credentials.inheritSession(
+        current,
+        current.withToken(lease.token)
+      ),
+      release: lease.release,
+    }
+  }
+
+  /** Whether an account owns a rotating credential pair. */
+  public isRefreshable(account: Account): boolean {
+    return this.credentials.isRefreshable(account)
+  }
+
+  /** Read test-dialog expiry metadata without acquiring or refreshing a token. */
+  public async getTokenExpirationForTesting(
+    account: Account
+  ): Promise<IAccountTokenExpiration> {
+    await this.loadingPromise
+    return this.credentials.getTokenExpirationForTesting(account)
+  }
+
+  /** Apply or reset a session-only access-token expiry override for testing. */
+  public async setTokenExpirationForTesting(
+    account: Account,
+    expiresAt: number | undefined
+  ): Promise<IAccountTokenExpiration> {
+    await this.loadingPromise
+    return this.credentials.setTokenExpirationForTesting(account, expiresAt)
+  }
+
+  /**
+   * Bind fresh access tokens and expiry metadata to the account's issuing session.
+   *
+   * Throws if the account snapshot is unknown or its session has retired.
+   */
+  public createTokenGetter(
+    account: Account,
+    minimumValidity = refreshMargin
+  ): () => Promise<Pick<IOAuthToken, 'accessToken' | 'expiresAt'>> {
+    return this.credentials.createTokenGetter(account, minimumValidity)
+  }
+
+  /** Ignore obsolete 401s; sign out when the current token is rejected. */
+  public async invalidateToken(endpoint: string, token: string): Promise<void> {
+    await this.loadingPromise
+    await this.credentials.invalidateToken(endpoint, token)
+  }
+
+  /**
+   * Revoke an unused credential, even if account lookup has not completed.
+   *
+   * Cleanup is bounded and failures are logged. Callers need not await it, but
+   * must only pass credentials that have not been installed for an account.
+   */
+  public revokeUnusedToken(account: RevocableToken): Promise<void> {
+    return this.credentials.revokeUnusedToken(account)
+  }
+
+  /** Sign out an account whose credential can no longer be used. */
+  private requireSignIn = async (account: Account): Promise<Account | null> => {
+    const retired = this.retireAccount(account)
+    if (retired === null) {
+      return null
+    }
+    log.info(
+      `[AccountsStore] signing out account ${retired.login} (${retired.name}) because its credentials can no longer be used`
+    )
+    this.emitter.emit(
+      'token-invalidated',
+      this.credentials.inheritSession(account, account.withToken(''))
+    )
+    await this.deleteStoredAccount(retired)
+    return retired
+  }
+
+  private onTokenRenewed = (
+    endpoint: string,
+    accessToken: string,
+    login: string
+  ) => {
+    this.pendingLegacyCredentials.delete(
+      getPersistedUserKey({ endpoint, login })
+    )
+    this.accounts = this.accounts.map(a =>
+      a.endpoint === endpoint && a.login === login
+        ? this.credentials.inheritSession(a, a.withToken(accessToken))
+        : a
+    )
+    this.save()
+  }
+
+  private onRemovedElsewhere = (account: Account): boolean => {
+    const persisted = parsePersistedUsers(this.dataStore.getItem('users'))
+    if (
+      persisted === undefined ||
+      persisted.has(getPersistedUserKey(account))
+    ) {
+      return false
+    }
+    this.retireAccount(account)
+    return true
+  }
+
+  private onSignedIn = (account: Account) => {
+    const accountsByKey = this.accounts.reduce(
+      (map, x) => map.set(getPersistedUserKey(x), x),
+      new Map<string, Account>()
+    )
+    accountsByKey.set(getPersistedUserKey(account), account)
+    this.pendingLegacyCredentials.delete(getPersistedUserKey(account))
+    // Even if another window removed this account, the new sign-in is kept.
+    this.ownUserKeys.delete(getPersistedUserKey(account))
+
+    this.accounts = sortAccounts([...accountsByKey.values()])
+    this.save()
   }
 
   /**
@@ -187,8 +438,13 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
 
   /**
    * Add the account to the store.
+   *
+   * Returns a new signed-in snapshot. Previous snapshots retain their old session.
    */
-  public async addAccount(account: Account): Promise<Account | null> {
+  public async addAccount(
+    account: Account,
+    credential: IOAuthToken = { accessToken: account.token }
+  ): Promise<Account | null> {
     await this.loadingPromise
 
     // Reject the account if a live account on the same host has a different API type.
@@ -210,121 +466,123 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
       }
     }
 
-    if (!(await this.storeAccountKey(account))) {
+    let authenticatedAccount: Account
+    try {
+      authenticatedAccount = await this.credentials.add(account, credential)
+    } catch (e) {
+      log.error(`Error adding account '${account.login}'`, e)
+      this.emitCredentialStorageError(e)
       return null
     }
 
-    const accountsByEndpoint = this.accounts.reduce(
-      (map, x) => map.set(x.endpoint + ':' + x.login, x),
-      new Map<string, Account>()
-    )
-    accountsByEndpoint.set(account.endpoint + ':' + account.login, account)
-
-    this.accounts = sortAccounts([...accountsByEndpoint.values()])
-
-    this.save()
-    return account
-  }
-
-  public async modifyAccount(newAccount: Account): Promise<Account | null> {
-    await this.loadingPromise
-    const index = this.accounts.findIndex(
-      a => a.endpoint === newAccount.endpoint && a.id === newAccount.id
-    )
-    if (index === -1) {
-      log.warn(
-        `Account not found in store when trying to modify: ${newAccount.login}`
-      )
-      return null
-    }
-    if (!(await this.storeAccountKey(newAccount))) {
-      return null
-    }
-    this.accounts = this.accounts.map((a, i) => (i === index ? newAccount : a))
-
-    this.save()
-    this.emitUpdate(this.accounts)
-    return this.accounts[index]
+    return authenticatedAccount
   }
 
   /** Refresh all accounts by fetching their latest info from the API. */
   public async refresh(): Promise<void> {
-    this.accounts = await Promise.all(
-      this.accounts.map(acc => this.tryUpdateAccount(acc))
-    )
-
-    this.save()
-    this.emitUpdate(this.accounts)
+    await this.loadingPromise
+    await Promise.all(this.accounts.map(acc => this.tryUpdateAccount(acc)))
   }
 
-  private async storeAccountKey(account: Account) {
-    try {
-      const key = getKeyForAccount(account)
-      await this.secureStore.setItem(key, account.login, account.token)
-      return true
-    } catch (e) {
-      log.error(`Error adding account '${account.login}'`, e)
-
-      if ((__DARWIN__ || __LINUX__) && isKeyChainError(e)) {
-        this.emitError(
-          new Error(
-            `Desktop Plus was unable to store the account token in the keychain. Please check you have unlocked access to the 'login' keychain.`
-          )
+  private emitCredentialStorageError(e: Error) {
+    if ((__DARWIN__ || __LINUX__) && isKeyChainError(e)) {
+      this.emitError(
+        new Error(
+          `Desktop Plus was unable to store the account token in the keychain. Please check you have unlocked access to the 'login' keychain.`
         )
-      } else {
-        this.emitError(e)
-      }
-      return false
+      )
+    } else if (__LINUX__ && isMissingSecretServiceError(e)) {
+      this.emitError(
+        new Error(
+          `Desktop Plus was unable to store the account token because no keyring service is running. Please install and start a Secret Service provider (such as gnome-keyring) and try again.`
+        )
+      )
+    } else {
+      this.emitError(e)
     }
   }
 
   /**
-   * Attempts to update the Account with new information from
-   * the API.
-   *
-   * If the update fails for whatever reason this function
-   * will return the old Account instance. Usually updates fails
-   * due to connectivity issues but in the future we should
-   * investigate whether we're able to detect here that the
-   * token is definitely not valid anymore and let the
-   * user know that they've been signed out.
+   * Refresh profile data without resurrecting a removed account or replacing
+   * credentials that rotated while the profile request was in flight.
    */
-  private async tryUpdateAccount(account: Account): Promise<Account> {
+  private async tryUpdateAccount(account: Account): Promise<void> {
+    const currentToken = this.credentials.trackToken(
+      account.endpoint,
+      account.login
+    )
     try {
-      return await updatedAccount(account)
+      const fresh = await this.getAccountWithFreshToken(account)
+      const updated = await updatedAccount(fresh)
+      // The login keys the account's session, secure-storage item and
+      // repository associations, so a renamed user keeps the previous login
+      // until they sign in again.
+      if (updated.login !== account.login) {
+        log.warn(
+          `Account '${account.login}' was renamed to '${updated.login}'. Sign in again to use the new login.`
+        )
+        return
+      }
+      const token = currentToken()
+      if (token !== null) {
+        this.accounts = this.accounts.map(a =>
+          isSameSignIn(a, account)
+            ? this.credentials.inheritSession(a, updated.withToken(token))
+            : a
+        )
+        this.save()
+      }
     } catch (e) {
       log.warn(`Error refreshing account '${account.login}'`, e)
-      return account
     }
   }
 
-  /**
-   * Remove the account from the store.
-   */
-  public async removeAccount(account: Account): Promise<void> {
-    await this.loadingPromise
+  private retireAccount(account: Account): Account | null {
+    const current = this.accounts.find(a => isSameSignIn(a, account))
+    if (current === undefined || current.id !== account.id) {
+      return null
+    }
+    this.credentials.retire(account.endpoint, account.login)
+    this.accounts = this.accounts.filter(a => !isSameSignIn(a, account))
+    this.save()
+    return current
+  }
 
+  private async deleteStoredAccount(account: Account): Promise<void> {
     try {
-      await this.secureStore.deleteItem(
-        getKeyForAccount(account),
-        account.login
-      )
+      await this.credentials.delete(account)
     } catch (e) {
       log.error(`Error removing account '${account.login}'`, e)
       this.emitError(e)
-      return
     }
+  }
 
-    this.accounts = this.accounts.filter(
-      a =>
-        !(
-          a.endpoint === account.endpoint &&
-          a.login === account.login &&
-          a.id === account.id
-        )
-    )
+  /**
+   * Remove an account and return its credential snapshot for remote revocation.
+   *
+   * Capture and retire the current session without yielding so renewal cannot
+   * publish a token between those steps. Return the snapshot even if deleting
+   * secure storage fails, or null if this account is no longer installed.
+   */
+  public async removeAccount(account: Account): Promise<Account | null> {
+    await this.loadingPromise
+    const current = this.retireAccount(account)
+    if (current !== null) {
+      await this.revokeNewerStoredCredential(current)
+      await this.deleteStoredAccount(current)
+    }
+    return current
+  }
 
-    this.save()
+  /**
+   * Another window may have renewed the pair since this window's snapshot,
+   * which the caller revokes; revoke the newer token too.
+   */
+  private async revokeNewerStoredCredential(account: Account) {
+    const stored = await this.credentials.readStoredCredential(account)
+    if (stored && stored.accessToken !== account.token) {
+      void this.revokeUnusedToken(account.withToken(stored.accessToken))
+    }
   }
 
   private getMigratedGHEAccounts(
@@ -360,20 +618,22 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     }
 
     const parsedAccounts: ReadonlyArray<IAccount> = JSON.parse(raw)
+    this.ownUserKeys = new Set(parsedAccounts.map(getPersistedUserKey))
     const migratedAccounts = this.getMigratedGHEAccounts(parsedAccounts)
     const rawAccounts = migratedAccounts ?? parsedAccounts
 
     const needsApiTypeBackfill = rawAccounts.some(a => a.apiType === undefined)
+    const hasLegacyCredentials = rawAccounts.some(hasLegacyCredentialFields)
 
-    const accountsWithTokens = []
-    for (const account of rawAccounts) {
+    // Duplicate sign-ins keep the last entry.
+    const accountsByKey = new Map<string, Account>()
+    let removedInvalidAccounts = false
+    for (const [index, account] of rawAccounts.entries()) {
       const accountWithoutToken = new Account(
         account.login,
         account.endpoint,
         account.apiType ?? deriveApiType(account.endpoint),
         '',
-        account.refreshToken,
-        account.tokenExpiresAt,
         account.emails,
         account.avatarURL,
         account.id,
@@ -385,29 +645,90 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
 
       const key = getKeyForAccount(accountWithoutToken)
       try {
-        const token = await this.secureStore.getItem(key, account.login)
-        accountsWithTokens.push(accountWithoutToken.withToken(token || ''))
+        const stored = await this.secureStore.getItem(key, account.login)
+        const { credential, pending } = await migrateLegacyCredential(
+          this.secureStore,
+          key,
+          accountWithoutToken,
+          account,
+          deserializeAccountCredential(stored)
+        )
+        if (pending) {
+          this.pendingLegacyCredentials.add(
+            getPersistedUserKey(accountWithoutToken)
+          )
+        }
+        if (credential === null && stored !== null) {
+          removedInvalidAccounts = true
+          try {
+            await this.secureStore.deleteItem(key, account.login)
+          } catch (e) {
+            log.error('Unable to remove unusable credentials.', e)
+            this.emitError(new Error('Unable to remove unusable credentials.'))
+          }
+          continue
+        }
+        const loaded = accountWithoutToken.withToken(
+          credential?.accessToken ?? ''
+        )
+        const restored = this.credentials.restore(loaded, credential)
+        accountsByKey.set(getPersistedUserKey(restored), restored)
       } catch (e) {
         log.error(`Error getting token for '${key}'. Skipping.`, e)
+        // Kept like another window's entry, so it loads again later.
+        this.ownUserKeys.delete(getPersistedUserKey(parsedAccounts[index]))
 
         this.emitError(e)
       }
     }
 
-    this.accounts = sortAccounts(accountsWithTokens)
+    this.accounts = sortAccounts([...accountsByKey.values()])
     // If any account was migrated, make sure to persist the new value
-    if (migratedAccounts !== null || needsApiTypeBackfill) {
+    if (
+      migratedAccounts !== null ||
+      needsApiTypeBackfill ||
+      hasLegacyCredentials ||
+      removedInvalidAccounts
+    ) {
       this.save() // Save already emits an update
     } else {
       this.emitUpdate(this.accounts)
     }
   }
 
+  /** This window's accounts that are gone from `persisted` were removed elsewhere. */
+  private forgetAccountsRemovedElsewhere(
+    persisted: PersistedUsers | undefined
+  ) {
+    const isRemoved = (a: Account) =>
+      persisted !== undefined &&
+      this.ownUserKeys.has(getPersistedUserKey(a)) &&
+      !persisted.has(getPersistedUserKey(a))
+    for (const account of this.accounts.filter(isRemoved)) {
+      log.info(`Account '${account.login}' was removed in another window.`)
+      this.credentials.retire(account.endpoint, account.login)
+    }
+    this.accounts = this.accounts.filter(a => !isRemoved(a))
+  }
+
   private save() {
+    const persisted = parsePersistedUsers(this.dataStore.getItem('users'))
+    this.forgetAccountsRemovedElsewhere(persisted)
     const usersWithoutTokens = this.accounts.map(account =>
       account.withToken('')
     )
-    this.dataStore.setItem('users', JSON.stringify(usersWithoutTokens))
+    this.dataStore.setItem(
+      'users',
+      JSON.stringify(
+        withPersistedUsers(
+          usersWithoutTokens,
+          persisted,
+          a => this.pendingLegacyCredentials.has(getPersistedUserKey(a)),
+          this.ownUserKeys
+        )
+      )
+    )
+    this.ownUserKeys = new Set(usersWithoutTokens.map(getPersistedUserKey))
 
     this.emitUpdate(this.accounts)
   }
@@ -424,8 +745,6 @@ async function updatedAccount(account: Account): Promise<Account> {
     account.endpoint,
     account.apiType,
     account.token,
-    account.refreshToken,
-    account.tokenExpiresAt,
     account.login
   )
 }

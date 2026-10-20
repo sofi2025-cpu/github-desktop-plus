@@ -28,7 +28,7 @@ import {
   type IBYOKProvider,
 } from '../../../src/lib/copilot/byok'
 import { Account } from '../../../src/models/account'
-import type { Model } from '@github/copilot-sdk/dist/generated/rpc'
+import type { Model } from '../../../src/lib/copilot/types'
 import { setNumberFormatPreference } from '../../../src/models/formatting-preferences'
 import { deriveApiType } from '../../../src/lib/api'
 
@@ -58,8 +58,6 @@ function makeAccount(options: IAccountOptions = {}): Account {
     options.endpoint ?? 'https://api.github.com',
     deriveApiType(options.endpoint ?? 'https://api.github.com'),
     'token',
-    'refreshToken',
-    0,
     [],
     options.avatarURL ?? 'https://avatars.githubusercontent.com/u/1',
     options.id ?? 1,

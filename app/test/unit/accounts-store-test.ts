@@ -8,6 +8,8 @@ import {
   resetEndpointApiTypeRegistryForTesting,
 } from '../../src/lib/endpoint-api-type-registry'
 import { GitLabCloudAPIEndpoint } from '../../src/lib/api'
+import { TokenRefreshEvent } from '../../src/lib/credential-sessions'
+import { OAuthRefreshRejectedError } from '../../src/lib/oauth-token'
 
 describe('AccountsStore', () => {
   let accountsStore: AccountsStore
@@ -30,8 +32,6 @@ describe('AccountsStore', () => {
           '',
           'dotcom',
           'deadbeef',
-          '',
-          0,
           [],
           '',
           1,
@@ -43,6 +43,132 @@ describe('AccountsStore', () => {
       const users = await accountsStore.getAll()
       assert.equal(users[0].login, newAccountLogin)
     })
+  })
+
+  it('publishes credential-free renewal events and supports unsubscribing', async t => {
+    const account = new Account(
+      'octocat',
+      'https://api.github.com',
+      'dotcom',
+      'old-access',
+      [],
+      '',
+      1,
+      'Octocat'
+    )
+    const store = new AccountsStore(
+      new InMemoryStore(),
+      new AsyncInMemoryStore(),
+      async () => ({
+        accessToken: 'new-access',
+        refreshToken: 'new-refresh',
+        expiresAt: Date.now() + 8 * 60 * 60_000,
+      })
+    )
+    await store.addAccount(account, {
+      accessToken: account.token,
+      refreshToken: 'old-refresh',
+      expiresAt: 0,
+    })
+    const events: TokenRefreshEvent[] = []
+    const subscription = store.onTokenRefreshEvent(event => events.push(event))
+    t.after(() => subscription.dispose())
+    await store.getAccountWithFreshToken(account)
+    assert.deepEqual(events, ['attempt', 'success'])
+    subscription.dispose()
+    await store.addAccount(account, {
+      accessToken: account.token,
+      refreshToken: 'another-refresh',
+      expiresAt: 0,
+    })
+    await store.getAccountWithFreshToken(account)
+    assert.deepEqual(events, ['attempt', 'success'])
+  })
+
+  it('counts actual renewal sign-outs even if deleting secure storage fails', async t => {
+    const secure = new AsyncInMemoryStore()
+    const store = new AccountsStore(new InMemoryStore(), secure, async () => {
+      throw new OAuthRefreshRejectedError()
+    })
+    const account = new Account(
+      'octocat',
+      'https://api.github.com',
+      'dotcom',
+      'old-access',
+      [],
+      '',
+      1,
+      'Octocat'
+    )
+    await store.addAccount(account, {
+      accessToken: account.token,
+      refreshToken: 'old-refresh',
+      expiresAt: 0,
+    })
+    const events: TokenRefreshEvent[] = []
+    const subscription = store.onTokenRefreshEvent(event => events.push(event))
+    t.after(() => subscription.dispose())
+    const deletion = t.mock.method(secure, 'deleteItem', async () => {
+      throw new Error('Secure deletion failed')
+    })
+    await assert.rejects(
+      store.getAccountWithFreshToken(account),
+      OAuthRefreshRejectedError
+    )
+    assert.equal(deletion.mock.callCount(), 1)
+    assert.deepEqual(await store.getAll(), [])
+    assert.deepEqual(events, [
+      'attempt',
+      'non-transient-failure',
+      'required-sign-in',
+    ])
+  })
+
+  it('edits expiry without publishing an account change or triggering renewal', async t => {
+    const previousPreview = process.env.GITHUB_DESKTOP_PREVIEW_FEATURES
+    process.env.GITHUB_DESKTOP_PREVIEW_FEATURES = '1'
+    t.after(() => {
+      if (previousPreview === undefined) {
+        delete process.env.GITHUB_DESKTOP_PREVIEW_FEATURES
+      } else {
+        process.env.GITHUB_DESKTOP_PREVIEW_FEATURES = previousPreview
+      }
+    })
+    const now = Date.now()
+    const account = new Account(
+      'octocat',
+      'https://api.github.com',
+      'dotcom',
+      'test-access',
+      [],
+      '',
+      1,
+      'Octocat'
+    )
+    await accountsStore.addAccount(account, {
+      accessToken: account.token,
+      refreshToken: 'test-refresh',
+      expiresAt: now + 8 * 60 * 60_000,
+    })
+    const [current] = await accountsStore.getAll()
+    assert.ok(current)
+    const getter = accountsStore.createTokenGetter(current, 0)
+    let updates = 0
+    const subscription = accountsStore.onDidUpdate(() => {
+      updates++
+    })
+    t.after(() => subscription.dispose())
+
+    await accountsStore.setTokenExpirationForTesting(current, now + 5 * 60_000)
+    assert.equal((await getter()).expiresAt, now + 5 * 60_000)
+    assert.equal(
+      (await accountsStore.getTokenExpirationForTesting(current)).isOverridden,
+      true
+    )
+    await accountsStore.setTokenExpirationForTesting(current, undefined)
+    assert.equal((await getter()).expiresAt, now + 8 * 60 * 60_000)
+    assert.equal(updates, 0)
+    assert.equal((await accountsStore.getAll())[0], current)
   })
 
   describe('loading persisted users', () => {
@@ -184,19 +310,7 @@ describe('AccountsStore', () => {
     it('registers self-hosted endpoints when adding an account', async () => {
       const endpoint = 'https://gitlab.example.com/api/v4'
       const added = await accountsStore.addAccount(
-        new Account(
-          'joan',
-          endpoint,
-          'gitlab',
-          't',
-          '',
-          0,
-          [],
-          '',
-          1,
-          '',
-          'free'
-        )
+        new Account('joan', endpoint, 'gitlab', 't', [], '', 1, '', 'free')
       )
 
       assert.notEqual(added, null)
@@ -210,8 +324,6 @@ describe('AccountsStore', () => {
           GitLabCloudAPIEndpoint,
           'gitlab',
           't',
-          '',
-          0,
           [],
           '',
           1,
@@ -228,8 +340,6 @@ describe('AccountsStore', () => {
         'https://git.example.com/api/v3',
         'enterprise',
         't',
-        '',
-        0,
         [],
         '',
         1,
@@ -242,8 +352,6 @@ describe('AccountsStore', () => {
         'https://git.example.com/api/v4',
         'gitlab',
         't',
-        '',
-        0,
         [],
         '',
         2,
@@ -262,8 +370,6 @@ describe('AccountsStore', () => {
         'https://git.example.com:8443/api/v4',
         'gitlab',
         't',
-        '',
-        0,
         [],
         '',
         1,
@@ -274,8 +380,6 @@ describe('AccountsStore', () => {
         'https://git.example.com:3000/api/v1',
         'forgejo',
         't',
-        '',
-        0,
         [],
         '',
         2,
@@ -286,8 +390,6 @@ describe('AccountsStore', () => {
         'https://git.example.com:3001/api/v1',
         'gitea',
         't',
-        '',
-        0,
         [],
         '',
         3,
@@ -323,8 +425,6 @@ describe('AccountsStore', () => {
           'https://git.example.com/api/v3',
           'enterprise',
           't',
-          '',
-          0,
           [],
           '',
           1,

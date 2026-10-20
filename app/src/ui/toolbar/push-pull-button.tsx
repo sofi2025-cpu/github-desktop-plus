@@ -34,6 +34,8 @@ import { assertNever } from '../../lib/fatal-error'
 import { GitHubRepository } from '../../models/github-repository'
 import { getForgejoName } from '../../lib/forgejo-name'
 import { formatCompactNumber } from '../../lib/format-number'
+import { showContextualMenu } from '../../lib/menu-item'
+import { PopupType } from '../../models/popup'
 
 export const DropdownItemClassName = 'push-pull-dropdown-item'
 
@@ -266,6 +268,7 @@ export class PushPullButton extends React.Component<
     return {
       className: 'push-pull-button',
       style: ToolbarButtonStyle.Subtitle,
+      onContextMenu: this.onContextMenu,
     }
   }
 
@@ -282,7 +285,38 @@ export class PushPullButton extends React.Component<
       dropdownState: this.props.isDropdownOpen ? 'open' : 'closed',
       enableFocusTrap: this.props.enableFocusTrap,
       onDropdownStateChanged: this.props.onDropdownStateChanged,
+      onContextMenu: this.onContextMenu,
     }
+  }
+
+  private onContextMenu = async (
+    event: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault()
+
+    const { dispatcher, repository, tipState, remoteName } = this.props
+    if (tipState !== TipState.Valid || remoteName === null) {
+      return
+    }
+
+    const remotes = await dispatcher.getRemotes(repository)
+    if (remotes.length < 2) {
+      return
+    }
+
+    showContextualMenu([
+      {
+        label: __DARWIN__ ? 'Push to Other Remote…' : 'Push to other remote…',
+        action: () => {
+          this.closeDropdown()
+          dispatcher.showPopup({
+            type: PopupType.PushToRemote,
+            repository,
+            remotes,
+          })
+        },
+      },
+    ])
   }
 
   private closeDropdown() {

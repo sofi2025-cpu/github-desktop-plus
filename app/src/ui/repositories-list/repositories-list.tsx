@@ -1,4 +1,5 @@
 import * as React from 'react'
+import * as ReactDOM from 'react-dom'
 
 import { commitGrammar, RepositoryListItem } from './repository-list-item'
 import {
@@ -10,7 +11,25 @@ import {
   RepositoryListGroup,
   getGroupKey,
   getGroupForRepository,
+  applyRepositoryGroupOrder,
+  isReorderableRepositoryGroup,
+  moveRepositoryGroupInOrder,
+  IRepositoryGroupDropTarget,
+  getRepositoryGroupDropBoundary,
+  areRepositoryGroupDropTargetsEqual,
 } from './group-repositories'
+import {
+  RepositoryGroupDropPosition,
+  RepositoryGroupDropZone,
+} from './repository-group-drop-zone'
+import {
+  getRepositoryGroupOrder,
+  resetRepositoryGroupOrder,
+  setRepositoryGroupOrder,
+} from '../../lib/stores/repository-group-order'
+import { Draggable } from '../lib/draggable'
+import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
+import { DragType, DropTargetSelector } from '../../models/drag-drop'
 import {
   getPinnedRepositories,
   addPinnedRepository,
@@ -45,6 +64,7 @@ import { assertNever } from '../../lib/fatal-error'
 import { IAheadBehind } from '../../models/branch'
 import { ShowBranchNameInRepoListSetting } from '../../models/show-branch-name-in-repo-list'
 import { getEditorOverrideLabel } from '../../models/editor-override'
+import { AriaLiveContainer } from '../accessibility/aria-live-container'
 import classNames from 'classnames'
 
 const BlankSlateImage = encodePathAsUrl(__dirname, 'static/empty-no-repo.svg')
@@ -53,6 +73,9 @@ interface IRepositoriesListProps {
   readonly selectedRepository: Repositoryish | null
   readonly repositories: ReadonlyArray<Repositoryish>
   readonly recentRepositories: ReadonlyArray<number>
+
+  /** The ids of the snoozed repositories, mapped to when their snooze ends */
+  readonly snoozedRepositories: ReadonlyMap<number, number>
 
   /** A cache of the latest repository state values, keyed by the repository id */
   readonly localRepositoryStateLookup: ReadonlyMap<
@@ -122,6 +145,18 @@ interface IRepositoriesListState {
 
   /** The keys of the groups the user has collapsed */
   readonly collapsedGroups: ReadonlySet<string>
+
+  /** The keys of the groups in the order chosen by the user, if any */
+  readonly groupOrder: ReadonlyArray<string>
+
+  /** The group currently being dragged to a new position, if any */
+  readonly draggedGroup: { readonly key: string; readonly label: string } | null
+
+  /** The drop zone hovered by the group being dragged, if any */
+  readonly hoveredGroupDropZone: IRepositoryGroupDropTarget | null
+
+  /** The screen reader announcement of the last group moved with the keyboard */
+  readonly groupOrderMessage: string | null
 }
 
 const RowHeight = 29
@@ -182,6 +217,18 @@ interface IRepositoryGroupHeaderProps {
     group: RepositoryListGroup,
     event: React.MouseEvent<HTMLDivElement>
   ) => void
+
+  /** Whether the group can be dragged to a different position in the list */
+  readonly canDrag: boolean
+  readonly onRenderDragElement: (group: RepositoryListGroup) => void
+  readonly onRemoveDragElement: () => void
+  readonly onDragEnd: () => void
+
+  /**
+   * Whether clicks on the header's buttons must be ignored, as they come from
+   * releasing the mouse at the end of a drag rather than from a real click
+   */
+  readonly isClickSuppressed: () => boolean
 }
 
 /**
@@ -195,7 +242,25 @@ class RepositoryGroupHeader extends React.Component<IRepositoryGroupHeaderProps>
   }
 
   private onToggleCollapsed = () => {
+    if (this.props.isClickSuppressed()) {
+      return
+    }
     this.props.onToggleCollapsed(this.props.group)
+  }
+
+  private onDragStart = () => {
+    // Otherwise the header keeps its focus ring while being dragged
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur()
+    }
+    dragAndDropManager.setDragData({
+      type: DragType.RepositoryGroup,
+      groupKey: getGroupKey(this.props.group),
+    })
+  }
+
+  private onRenderDragElement = () => {
+    this.props.onRenderDragElement(this.props.group)
   }
 
   /**
@@ -211,12 +276,15 @@ class RepositoryGroupHeader extends React.Component<IRepositoryGroupHeaderProps>
 
   private onPullAllClick = (event: React.MouseEvent) => {
     event.stopPropagation()
+    if (this.props.isClickSuppressed()) {
+      return
+    }
     this.props.onPullAll(this.props.group)
   }
 
   private onDeleteClick = (event: React.MouseEvent) => {
     event.stopPropagation()
-    if (this.props.groupName !== null) {
+    if (!this.props.isClickSuppressed() && this.props.groupName !== null) {
       this.props.onDelete(this.props.groupName)
     }
   }
@@ -262,32 +330,43 @@ class RepositoryGroupHeader extends React.Component<IRepositoryGroupHeaderProps>
     const { label, collapsed, groupName } = this.props
 
     return (
-      <div
-        className="repository-group-header"
-        onContextMenu={this.onContextMenu}
+      <Draggable
+        isEnabled={this.props.canDrag}
+        onDragStart={this.onDragStart}
+        onDragEnd={this.props.onDragEnd}
+        onRenderDragElement={this.onRenderDragElement}
+        onRemoveDragElement={this.props.onRemoveDragElement}
+        dropTargetSelectors={[DropTargetSelector.ListInsertionPoint]}
       >
-        <button
-          type="button"
-          className="repository-group-disclosure"
-          aria-expanded={!collapsed}
-          onClick={this.onToggleCollapsed}
-          onKeyDown={this.onButtonKeyDown}
+        <div
+          className="repository-group-header"
+          onContextMenu={this.onContextMenu}
         >
-          <Octicon
-            symbol={collapsed ? octicons.triangleRight : octicons.triangleDown}
-          />
-          <TooltippedContent
-            className="filter-list-group-header"
-            tooltip={label}
-            onlyWhenOverflowed={true}
-            tagName="span"
+          <button
+            type="button"
+            className="repository-group-disclosure"
+            aria-expanded={!collapsed}
+            onClick={this.onToggleCollapsed}
+            onKeyDown={this.onButtonKeyDown}
           >
-            {label}
-          </TooltippedContent>
-        </button>
-        {this.renderPullAllButton()}
-        {groupName !== null && this.renderDeleteGroupButton(groupName)}
-      </div>
+            <Octicon
+              symbol={
+                collapsed ? octicons.triangleRight : octicons.triangleDown
+              }
+            />
+            <TooltippedContent
+              className="filter-list-group-header"
+              tooltip={label}
+              onlyWhenOverflowed={true}
+              tagName="span"
+            >
+              {label}
+            </TooltippedContent>
+          </button>
+          {this.renderPullAllButton()}
+          {groupName !== null && this.renderDeleteGroupButton(groupName)}
+        </div>
+      </Draggable>
     )
   }
 }
@@ -363,6 +442,53 @@ export class RepositoriesList extends React.Component<
    */
   private getSelectedListItem = memoizeOne(findMatchingListItem)
 
+  private getUnsnoozedRepositories = memoizeOne(
+    (
+      repositories: ReadonlyArray<Repositoryish>,
+      snoozedRepositories: ReadonlyMap<number, number>
+    ) =>
+      repositories.filter(
+        r => !(r instanceof Repository && snoozedRepositories.has(r.id))
+      )
+  )
+
+  private getOrderedRepositoryGroups = memoizeOne(applyRepositoryGroupOrder)
+
+  /**
+   * The keys of the groups that can be reordered, in the order they were
+   * rendered the last time the list was rendered.
+   */
+  private renderedReorderableGroupKeys: ReadonlyArray<string> = []
+
+  /**
+   * The boundary between groups that the hovered drop zone belongs to, as of
+   * the last time the list was rendered, or `null` if no zone is hovered.
+   */
+  private renderedGroupDropBoundary: IRepositoryGroupDropTarget | null = null
+
+  /**
+   * While a group is being dragged, maps the last row of each expanded group
+   * that can be reordered to the group's key, so the row can offer dropping
+   * after the group. Keyed by item rather than id since the recent group
+   * repeats the ids of other groups.
+   */
+  private lastItemGroupKeys: ReadonlyMap<IRepositoryListItem, string> =
+    new Map()
+
+  /** Whether a group drag has started and not ended yet */
+  private isGroupDragInProgress = false
+
+  /** Whether the mouse button holding the current group drag was released */
+  private wasGroupDragMouseReleased = false
+
+  /**
+   * Whether clicks on group headers must be ignored. Releasing the mouse over
+   * a header's buttons after dragging fires a click on them, which must not
+   * trigger their action since the user meant to drop rather than click.
+   */
+  private suppressGroupHeaderClicks = false
+  private suppressGroupHeaderClicksTimeoutId: number | null = null
+
   /**
    * The keys of the groups rendered the last time the list was rendered. Used
    * to know which groups the "collapse all"/"expand all" actions apply to, and
@@ -389,6 +515,25 @@ export class RepositoriesList extends React.Component<
       pinnedRepositoriesIds: getPinnedRepositories(),
       pullingGroupKeys: new Set<string>(),
       collapsedGroups: getCollapsedRepositoryGroups(),
+      groupOrder: getRepositoryGroupOrder(),
+      draggedGroup: null,
+      hoveredGroupDropZone: null,
+      groupOrderMessage: null,
+    }
+  }
+
+  public componentWillUnmount() {
+    this.stopSuppressingGroupHeaderClicks()
+  }
+
+  public componentDidUpdate(prevProps: IRepositoriesListProps) {
+    // The edit dialog moves the saved position of a renamed group to its new
+    // key while this list stays mounted, so pick it up with the renamed repos
+    if (prevProps.repositories !== this.props.repositories) {
+      const groupOrder = getRepositoryGroupOrder()
+      if (!areStringArraysEqual(groupOrder, this.state.groupOrder)) {
+        this.setState({ groupOrder })
+      }
     }
   }
 
@@ -422,6 +567,64 @@ export class RepositoriesList extends React.Component<
         branchName={this.shouldShowBranchName(item) ? item.branchName : null}
         worktree={item.worktree}
       />
+    )
+  }
+
+  private renderItemWithDropZone = (
+    item: IRepositoryListItem,
+    matches: IMatches
+  ) => {
+    const groupKey = this.lastItemGroupKeys.get(item)
+
+    return (
+      <>
+        {this.renderItem(item, matches)}
+        {groupKey !== undefined && this.renderGroupDropZone(groupKey, 'after')}
+      </>
+    )
+  }
+
+  private renderGroupDropZone(
+    groupKey: string,
+    position: RepositoryGroupDropPosition
+  ) {
+    // Both zones of a boundary show the indicator of the boundary's canonical
+    // zone, so it doesn't jump between the two rows sharing the boundary
+    const showIndicator = areRepositoryGroupDropTargetsEqual(
+      this.renderedGroupDropBoundary,
+      { groupKey, position }
+    )
+
+    return (
+      <RepositoryGroupDropZone
+        groupKey={groupKey}
+        position={position}
+        showIndicator={showIndicator}
+        onMouseEnter={this.onGroupDropZoneMouseEnter}
+        onMouseLeave={this.onGroupDropZoneMouseLeave}
+        onDrop={this.onDropGroup}
+      />
+    )
+  }
+
+  private onGroupDropZoneMouseEnter = (
+    groupKey: string,
+    position: RepositoryGroupDropPosition
+  ) => {
+    this.setState({ hoveredGroupDropZone: { groupKey, position } })
+  }
+
+  private onGroupDropZoneMouseLeave = (
+    groupKey: string,
+    position: RepositoryGroupDropPosition
+  ) => {
+    this.setState(state =>
+      areRepositoryGroupDropTargetsEqual(state.hoveredGroupDropZone, {
+        groupKey,
+        position,
+      })
+        ? { hoveredGroupDropZone: null }
+        : null
     )
   }
 
@@ -530,7 +733,25 @@ export class RepositoriesList extends React.Component<
 
   private renderGroupHeader = (group: RepositoryListGroup) => {
     const groupKey = getGroupKey(group)
+    const collapsed = this.isGroupCollapsed(group)
+    const showDropZones =
+      this.state.draggedGroup !== null && isReorderableRepositoryGroup(group)
 
+    return (
+      <>
+        {showDropZones && this.renderGroupDropZone(groupKey, 'before')}
+        {this.renderGroupHeaderContent(group, groupKey)}
+        {showDropZones &&
+          collapsed &&
+          this.renderGroupDropZone(groupKey, 'after')}
+      </>
+    )
+  }
+
+  private renderGroupHeaderContent(
+    group: RepositoryListGroup,
+    groupKey: string
+  ) {
     return (
       <RepositoryGroupHeader
         key={groupKey}
@@ -543,8 +764,194 @@ export class RepositoriesList extends React.Component<
         onPullAll={this.onPullAllInGroup}
         onDelete={this.onDeleteGroup}
         onContextMenu={this.onGroupHeaderContextMenu}
+        canDrag={
+          isReorderableRepositoryGroup(group) &&
+          this.props.filterText.length === 0
+        }
+        onRenderDragElement={this.onRenderGroupDragElement}
+        onRemoveDragElement={this.onRemoveGroupDragElement}
+        onDragEnd={this.onGroupDragEnd}
+        isClickSuppressed={this.isGroupHeaderClickSuppressed}
       />
     )
+  }
+
+  private onRenderGroupDragElement = (group: RepositoryListGroup) => {
+    this.stopSuppressingGroupHeaderClicks()
+    this.isGroupDragInProgress = true
+    this.wasGroupDragMouseReleased = false
+    document.addEventListener('mouseup', this.onGroupDragMouseUp, true)
+    document.addEventListener('mousedown', this.onGroupDragMouseDown, true)
+
+    this.setState({
+      draggedGroup: {
+        key: getGroupKey(group),
+        label: this.getGroupLabel(group),
+      },
+    })
+  }
+
+  private onRemoveGroupDragElement = () => {
+    const { draggedGroup } = this.state
+    // Draggable also calls this when a slow click on a header ends without
+    // ever starting a drag
+    if (draggedGroup === null) {
+      return
+    }
+
+    this.setState({ draggedGroup: null, hoveredGroupDropZone: null })
+  }
+
+  private onGroupDragEnd = () => {
+    if (!this.isGroupDragInProgress) {
+      return
+    }
+
+    this.isGroupDragInProgress = false
+    this.suppressGroupHeaderClicks = true
+
+    // A drag cancelled with Escape ends while the button is still held, and
+    // its click only comes after the button is released
+    if (this.wasGroupDragMouseReleased) {
+      this.stopSuppressingGroupHeaderClicksSoon()
+    }
+  }
+
+  private onGroupDragMouseUp = () => {
+    this.wasGroupDragMouseReleased = true
+    if (!this.isGroupDragInProgress) {
+      this.stopSuppressingGroupHeaderClicksSoon()
+    }
+  }
+
+  /**
+   * A new press means the button held during a cancelled drag was released
+   * outside of the window, so the click it starts is a real one
+   */
+  private onGroupDragMouseDown = () => {
+    if (!this.isGroupDragInProgress) {
+      this.stopSuppressingGroupHeaderClicks()
+    }
+  }
+
+  private isGroupHeaderClickSuppressed = () => this.suppressGroupHeaderClicks
+
+  private stopSuppressingGroupHeaderClicksSoon() {
+    this.removeGroupDragMouseListeners()
+    this.clearSuppressGroupHeaderClicksTimeout()
+    // The click that follows a mouseup is dispatched before any timer runs
+    this.suppressGroupHeaderClicksTimeoutId = window.setTimeout(() => {
+      this.suppressGroupHeaderClicks = false
+      this.suppressGroupHeaderClicksTimeoutId = null
+    }, 0)
+  }
+
+  private stopSuppressingGroupHeaderClicks() {
+    this.removeGroupDragMouseListeners()
+    this.clearSuppressGroupHeaderClicksTimeout()
+    this.suppressGroupHeaderClicks = false
+  }
+
+  private clearSuppressGroupHeaderClicksTimeout() {
+    if (this.suppressGroupHeaderClicksTimeoutId !== null) {
+      window.clearTimeout(this.suppressGroupHeaderClicksTimeoutId)
+      this.suppressGroupHeaderClicksTimeoutId = null
+    }
+  }
+
+  private removeGroupDragMouseListeners() {
+    document.removeEventListener('mouseup', this.onGroupDragMouseUp, true)
+    document.removeEventListener('mousedown', this.onGroupDragMouseDown, true)
+  }
+
+  private renderGroupDragElement() {
+    const { draggedGroup } = this.state
+    if (draggedGroup === null) {
+      return null
+    }
+
+    const dragElementHost = document.getElementById('dragElement')
+    if (dragElementHost === null) {
+      return null
+    }
+
+    return ReactDOM.createPortal(
+      <div id="repository-group-drag-element">
+        <Octicon symbol={octicons.fileDirectory} />
+        <span className="label">{draggedGroup.label}</span>
+      </div>,
+      dragElementHost
+    )
+  }
+
+  private onDropGroup = (
+    targetGroupKey: string,
+    position: RepositoryGroupDropPosition
+  ) => {
+    const { dragData } = dragAndDropManager
+    if (dragData === null || dragData.type !== DragType.RepositoryGroup) {
+      return
+    }
+
+    this.moveGroup(dragData.groupKey, targetGroupKey, position)
+  }
+
+  private moveGroup(
+    groupKey: string,
+    targetGroupKey: string,
+    position: RepositoryGroupDropPosition
+  ): ReadonlyArray<string> | null {
+    const savedOrder = getRepositoryGroupOrder()
+    const groupOrder = moveRepositoryGroupInOrder(
+      savedOrder,
+      this.renderedReorderableGroupKeys,
+      groupKey,
+      targetGroupKey,
+      position
+    )
+
+    if (groupOrder === savedOrder) {
+      return null
+    }
+
+    setRepositoryGroupOrder(groupOrder)
+    this.setState({ groupOrder })
+    return groupOrder
+  }
+
+  /** Moves the group one position up (-1) or down (+1) in the list */
+  private moveGroupBy(group: RepositoryListGroup, offset: -1 | 1) {
+    const keys = this.renderedReorderableGroupKeys
+    const groupKey = getGroupKey(group)
+    const index = keys.indexOf(groupKey)
+    const targetGroupKey = index < 0 ? undefined : keys[index + offset]
+
+    if (targetGroupKey === undefined) {
+      return
+    }
+
+    const groupOrder = this.moveGroup(
+      groupKey,
+      targetGroupKey,
+      offset < 0 ? 'before' : 'after'
+    )
+
+    if (groupOrder !== null) {
+      const displayedKeys = new Set(keys)
+      const newIndex = groupOrder
+        .filter(key => displayedKeys.has(key))
+        .indexOf(groupKey)
+      const label = this.getGroupLabel(group)
+      const position = `${newIndex + 1} of ${keys.length}`
+      this.setState({
+        groupOrderMessage: `Moved group "${label}" to position ${position}`,
+      })
+    }
+  }
+
+  private onResetGroupOrder = () => {
+    resetRepositoryGroupOrder()
+    this.setState({ groupOrder: [] })
   }
 
   /** The repositories that "Pull all" in the given group applies to. */
@@ -623,6 +1030,7 @@ export class RepositoriesList extends React.Component<
           canToggle &&
           [...this.renderedGroupKeys].some(key => collapsedGroups.has(key)),
       },
+      ...this.getGroupOrderMenuItems(group),
       { type: 'separator' },
       {
         label: __DARWIN__
@@ -658,6 +1066,41 @@ export class RepositoriesList extends React.Component<
           ]
 
     showContextualMenu([...items, ...editItems, ...deleteItems])
+  }
+
+  private getGroupOrderMenuItems(
+    group: RepositoryListGroup
+  ): ReadonlyArray<IMenuItem> {
+    const keys = this.renderedReorderableGroupKeys
+    const index = keys.indexOf(getGroupKey(group))
+    // Consistent with dragging, which filtering disables
+    const canMove = this.props.filterText.length === 0
+    const moveItems: ReadonlyArray<IMenuItem> = isReorderableRepositoryGroup(
+      group
+    )
+      ? [
+          {
+            label: __DARWIN__ ? 'Move Group Up' : 'Move group up',
+            action: () => this.moveGroupBy(group, -1),
+            enabled: canMove && index > 0,
+          },
+          {
+            label: __DARWIN__ ? 'Move Group Down' : 'Move group down',
+            action: () => this.moveGroupBy(group, 1),
+            enabled: canMove && index >= 0 && index < keys.length - 1,
+          },
+        ]
+      : []
+
+    return [
+      { type: 'separator' },
+      ...moveItems,
+      {
+        label: __DARWIN__ ? 'Reset Group Order' : 'Reset group order',
+        action: this.onResetGroupOrder,
+        enabled: this.state.groupOrder.length > 0,
+      },
+    ]
   }
 
   private onEditGroup = (group: RepositoryListGroup) => {
@@ -784,6 +1227,7 @@ export class RepositoriesList extends React.Component<
     const items = generateRepositoryListContextMenu({
       worktreePath: item.worktree?.path,
       onRemoveRepository: this.props.onRemoveRepository,
+      onSnoozeRepository: this.onSnoozeRepository,
       onShowRepository: this.props.onShowRepository,
       onOpenInNewWindow: this.props.onOpenInNewWindow,
       onOpenInShell: this.props.onOpenInShell,
@@ -829,11 +1273,17 @@ export class RepositoriesList extends React.Component<
       this.getGroupLabel(groups[group].identifier)
 
   public render() {
-    let groups = this.getRepositoryGroups(
+    const repositories = this.getUnsnoozedRepositories(
       this.props.repositories,
+      this.props.snoozedRepositories
+    )
+    const snoozedCount = this.props.repositories.length - repositories.length
+    let groups = this.getRepositoryGroups(
+      repositories,
       this.props.localRepositoryStateLookup,
       this.props.recentRepositories
     )
+    groups = this.getOrderedRepositoryGroups(groups, this.state.groupOrder)
 
     const { pinnedRepositoriesIds } = this.state
     if (pinnedRepositoriesIds.length > 0) {
@@ -858,6 +1308,18 @@ export class RepositoriesList extends React.Component<
       this.getSelectedListItem(groups, this.props.selectedRepository)
 
     this.renderedGroupKeys = new Set(groups.map(g => getGroupKey(g.identifier)))
+    this.renderedReorderableGroupKeys = groups
+      .filter(g => isReorderableRepositoryGroup(g.identifier))
+      .map(g => getGroupKey(g.identifier))
+    const { hoveredGroupDropZone } = this.state
+    this.renderedGroupDropBoundary =
+      hoveredGroupDropZone === null
+        ? null
+        : getRepositoryGroupDropBoundary(
+            this.renderedReorderableGroupKeys,
+            hoveredGroupDropZone
+          )
+    this.lastItemGroupKeys = this.getLastItemGroupKeys(groups)
 
     return (
       <div className="repository-list">
@@ -866,7 +1328,7 @@ export class RepositoriesList extends React.Component<
           selectedItem={selectedItem}
           filterText={this.props.filterText}
           onFilterTextChanged={this.props.onFilterTextChanged}
-          renderItem={this.renderItem}
+          renderItem={this.renderItemWithDropZone}
           renderRowFocusTooltip={this.renderRowFocusTooltip}
           renderGroupHeader={this.renderGroupHeader}
           isGroupCollapsed={this.isGroupCollapsed}
@@ -876,10 +1338,14 @@ export class RepositoriesList extends React.Component<
           groups={groups}
           invalidationProps={{
             repositories: this.props.repositories,
+            snoozedRepositories: this.props.snoozedRepositories,
             filterText: this.props.filterText,
             localRepositoryStateLookup: this.props.localRepositoryStateLookup,
             showWorktreesInRepoList: this.props.showWorktreesInRepoList,
             collapsedGroups: this.state.collapsedGroups,
+            groupOrder: this.state.groupOrder,
+            draggedGroup: this.state.draggedGroup,
+            hoveredGroupDropZone: this.state.hoveredGroupDropZone,
           }}
           onItemContextMenu={this.onItemContextMenu}
           getGroupAriaLabel={this.getGroupAriaLabelGetter(groups)}
@@ -890,8 +1356,60 @@ export class RepositoriesList extends React.Component<
             this.props.filterText
           )}
         />
+        {this.renderSnoozedRepositoriesButton(snoozedCount)}
+        {this.renderGroupDragElement()}
+        <AriaLiveContainer message={this.state.groupOrderMessage} />
       </div>
     )
+  }
+
+  private renderSnoozedRepositoriesButton(count: number) {
+    if (count === 0) {
+      return null
+    }
+
+    const label = __DARWIN__
+      ? `Snoozed Repositories (${count})`
+      : `Snoozed repositories (${count})`
+
+    return (
+      <button
+        type="button"
+        className="snoozed-repositories-button"
+        onClick={this.onSnoozedRepositoriesButtonClick}
+      >
+        <Octicon symbol={octicons.clock} />
+        <span className="label">{label}</span>
+      </button>
+    )
+  }
+
+  private onSnoozedRepositoriesButtonClick = () => {
+    this.props.dispatcher.showPopup({ type: PopupType.SnoozedRepositories })
+  }
+
+  private getLastItemGroupKeys(
+    groups: ReadonlyArray<
+      IFilterListGroup<IRepositoryListItem, RepositoryListGroup>
+    >
+  ): ReadonlyMap<IRepositoryListItem, string> {
+    const lastItemGroupKeys = new Map<IRepositoryListItem, string>()
+    if (this.state.draggedGroup === null) {
+      return lastItemGroupKeys
+    }
+
+    for (const { identifier, items } of groups) {
+      const lastItem = items.at(-1)
+      if (
+        lastItem !== undefined &&
+        isReorderableRepositoryGroup(identifier) &&
+        !this.isGroupCollapsed(identifier)
+      ) {
+        lastItemGroupKeys.set(lastItem, getGroupKey(identifier))
+      }
+    }
+
+    return lastItemGroupKeys
   }
 
   private getExternalEditorLabel(
@@ -1126,6 +1644,13 @@ export class RepositoriesList extends React.Component<
     this.props.dispatcher.changeRepositoryAlias(repository, null)
   }
 
+  private onSnoozeRepository = (repository: Repository) => {
+    this.props.dispatcher.showPopup({
+      type: PopupType.SnoozeRepository,
+      repository,
+    })
+  }
+
   private onCreateWorktree = (repository: Repository) => {
     this.props.dispatcher.showPopup({
       type: PopupType.AddWorktree,
@@ -1195,4 +1720,11 @@ export function getKnownGroupNames(
   return [...groupNames.values()].sort((x, y) =>
     x.toLowerCase().localeCompare(y.toLowerCase())
   )
+}
+
+function areStringArraysEqual(
+  x: ReadonlyArray<string>,
+  y: ReadonlyArray<string>
+) {
+  return x.length === y.length && x.every((value, i) => value === y[i])
 }

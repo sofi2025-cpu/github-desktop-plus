@@ -54,6 +54,7 @@ export type MenuEvent =
   | 'decrease-active-resizable-width'
   | 'increase-active-resizable-width'
   | 'toggle-changes-filter'
+  | 'toggle-view-mode-switches'
   | TestMenuEvent
 
 /**
@@ -88,6 +89,7 @@ const TestMenuEvents = [
   'test-showcase-update-banner',
   'test-thank-you-banner',
   'test-thank-you-popup',
+  'test-token-expiration',
   'test-unable-to-locate-git',
   'test-unable-to-open-shell',
   'test-undone-banner',

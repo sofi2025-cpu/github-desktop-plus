@@ -10,7 +10,7 @@ import { Branch } from './branch'
  * Thus, using a `|` here would allow us to specify multiple types of data that
  * can be dragged.
  */
-export type DragData = CommitDragData
+export type DragData = CommitDragData | RepositoryGroupDragData
 
 export type CommitDragData = {
   type: DragType.Commit
@@ -18,8 +18,15 @@ export type CommitDragData = {
   sourceBranch?: Branch
 }
 
+/** A repository group being moved to a different position in the list */
+export type RepositoryGroupDragData = {
+  type: DragType.RepositoryGroup
+  groupKey: string
+}
+
 export enum DragType {
   Commit,
+  RepositoryGroup,
 }
 
 export type DragElement = {

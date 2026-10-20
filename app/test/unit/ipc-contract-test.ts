@@ -49,6 +49,8 @@ describe('IPC channel contract', () => {
     'focus',
     'blur',
     'update-accounts',
+    'resolve-image-token',
+    'resolved-image-token',
     'quit-and-install-updates',
     'quit-app',
     'minimize-window',
@@ -73,6 +75,7 @@ describe('IPC channel contract', () => {
     'set-window-title',
     'set-window-selected-repository',
     'restart-app',
+    'set-title-bar-overlay-height',
   ] as const
 
   const expectedResponseChannels = [

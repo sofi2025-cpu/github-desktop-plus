@@ -1,0 +1,80 @@
+dialog#push-to-remote {
+  width: 450px;
+
+  // Make the filter text box appear to reside within the header, like in the
+  // cherry-pick and merge dialogs.
+  .dialog-header {
+    border-bottom: none;
+
+    h1 {
+      font-weight: var(--font-weight-light);
+    }
+  }
+
+  .dialog-content {
+    padding: 0;
+
+    .filter-field-row {
+      margin: 0;
+      border-bottom: var(--base-border);
+      padding: 0 var(--spacing-double) var(--spacing);
+    }
+  }
+
+  .push-remote-list {
+    height: 200px;
+  }
+
+  .remote-list-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    height: 100%;
+    min-width: 0;
+    padding: 0 var(--spacing-double);
+
+    .icon {
+      margin-right: var(--spacing);
+      flex-shrink: 0;
+    }
+
+    .name {
+      flex-shrink: 0;
+      max-width: 40%;
+      margin-right: var(--spacing);
+      font-weight: var(--font-weight-semibold);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .url {
+      flex-grow: 1;
+      min-width: 0;
+      color: var(--text-secondary-color);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .no-remotes {
+    width: 100%;
+    padding: var(--spacing);
+    text-align: center;
+    color: var(--text-secondary-color);
+  }
+
+  .set-upstream {
+    border-top: var(--base-border);
+    padding: var(--spacing) var(--spacing-double);
+  }
+
+  .dialog-footer {
+    button[type='submit'] {
+      height: auto;
+      width: 100%;
+      padding: var(--spacing-half);
+    }
+  }
+}

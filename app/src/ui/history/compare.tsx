@@ -160,6 +160,10 @@ export class CompareSidebar extends React.Component<
     this.commitListRef.current?.focus()
   }
 
+  public focusBranchFilter() {
+    this.textbox?.focus()
+  }
+
   public componentWillMount() {
     this.props.dispatcher.initializeCompare(this.props.repository)
   }

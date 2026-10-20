@@ -6,6 +6,7 @@
  */
 #repository-list-resizable {
   height: 100%;
+  container: repository-list / inline-size;
 }
 
 .repository-list {
@@ -115,6 +116,34 @@
 
     .octicon {
       transform: translateX(4px) translateY(-1px);
+    }
+  }
+
+  .list-item-content-wrapper > .draggable {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+  }
+
+  .repository-group-insertion-indicator {
+    &.darwin-circle {
+      &.top {
+        top: 0;
+      }
+      &.bottom {
+        bottom: -4px;
+      }
+    }
+
+    &.darwin-line {
+      &.top {
+        top: 4px;
+      }
+      &.bottom {
+        bottom: 0;
+      }
     }
   }
 
@@ -237,6 +266,70 @@
     margin-right: var(--spacing-half);
   }
 
+  &:has(> .snoozed-repositories-button) {
+    flex-direction: column;
+
+    > .filter-list {
+      min-height: 0;
+    }
+  }
+
+  .snoozed-repositories-button {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    min-width: 0;
+    height: 29px;
+    padding: 0 var(--spacing);
+    background: transparent;
+    border: none;
+    border-top: var(--base-border);
+    color: inherit;
+    font: inherit;
+    font-weight: var(--font-weight-semibold);
+    text-align: left;
+    cursor: pointer;
+
+    &:focus-visible {
+      outline-offset: -2px;
+    }
+
+    .octicon {
+      flex-shrink: 0;
+      margin-right: var(--spacing-half);
+      color: var(--text-secondary-color-muted);
+    }
+
+    &:hover .octicon,
+    &:focus-visible .octicon {
+      color: var(--text-color);
+    }
+
+    .label {
+      @include ellipsis;
+      min-width: 0;
+    }
+  }
+
+  // In narrow sidebars the buttons would leave the filter field too little
+  // room to show its text, so they move to a row of their own above it
+  @container repository-list (width < 250px) {
+    .filter-field-row {
+      flex-wrap: wrap;
+      row-gap: var(--spacing);
+
+      .filter-list-filter-field {
+        order: 1;
+        flex-basis: 100%;
+        margin-right: 0;
+      }
+
+      .button-component {
+        flex: 1;
+      }
+    }
+  }
+
   .no-items {
     text-align: center;
     padding: var(--spacing);
@@ -279,6 +372,34 @@
         text-align: center;
       }
     }
+  }
+}
+
+#repository-group-drag-element {
+  position: absolute;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  max-width: 300px;
+  height: 29px;
+  padding: 0 var(--spacing);
+  pointer-events: none;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  font-weight: var(--font-weight-semibold);
+  border-top: 1px solid var(--box-border-color);
+  border-left: 1px solid var(--box-border-color);
+  box-shadow: 2px 1px 1px 0px var(--box-border-color);
+
+  .octicon {
+    flex-shrink: 0;
+    margin-right: var(--spacing-half);
+    color: var(--text-secondary-color);
+  }
+
+  .label {
+    @include ellipsis;
+    min-width: 0;
   }
 }
 

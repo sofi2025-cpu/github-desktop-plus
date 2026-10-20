@@ -12,6 +12,7 @@ import {
   getDistRoot,
   getExecutableName,
 } from './dist-info'
+import { assertRelocatableSymlinks } from './verify-symlinks'
 
 const APPIMAGETOOL_VERSION = '1.9.1'
 
@@ -73,7 +74,7 @@ async function downloadAppImageTool(destination: string) {
 
 async function createAppDir(appDir: string, executableName: string) {
   await rm(appDir, { recursive: true, force: true })
-  await cp(getDistPath(), appDir, { recursive: true })
+  await cp(getDistPath(), appDir, { recursive: true, verbatimSymlinks: true })
   await chmod(appDir, 0o755)
 
   const appRunPath = join(appDir, 'AppRun')
@@ -132,6 +133,7 @@ export async function packageAppImage(): Promise<string> {
   try {
     console.log('Creating AppDir…')
     await createAppDir(appDir, executableName)
+    assertRelocatableSymlinks(appDir)
 
     await downloadAppImageTool(appImageTool)
 

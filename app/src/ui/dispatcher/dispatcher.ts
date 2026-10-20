@@ -149,7 +149,11 @@ import {
   IFileResolution,
   ICopilotResolutionSummary,
 } from '../../lib/copilot-conflict-resolution'
-import { WorktreeEntry } from '../../models/worktree'
+import {
+  IDeferredCheckout,
+  IDeleteWorktreeOptions,
+  WorktreeEntry,
+} from '../../models/worktree'
 
 /**
  * An error handler function.
@@ -997,6 +1001,19 @@ export class Dispatcher {
     return this.appStore._changeRepositoryAlias(repository, newAlias)
   }
 
+  /** Hides the repository from the repository list until the given time. */
+  public snoozeRepository(
+    repository: Repository,
+    until: number
+  ): Promise<void> {
+    return this.appStore._snoozeRepository(repository, until)
+  }
+
+  /** Shows a snoozed repository in the repository list again. */
+  public unsnoozeRepository(repository: Repository): Promise<void> {
+    return this.appStore._unsnoozeRepository(repository)
+  }
+
   /** Changes the repository group name to a new name. */
   public changeRepositoryGroupName(
     repository: Repository,
@@ -1262,10 +1279,10 @@ export class Dispatcher {
   public async deleteWorktree(
     repository: Repository,
     worktreePath: string,
-    force?: boolean
+    options?: IDeleteWorktreeOptions
   ): Promise<void> {
     await this.appStore
-      ._deleteWorktree(repository, worktreePath, force)
+      ._deleteWorktree(repository, worktreePath, options)
       .catch(e => this.postError(e))
   }
 
@@ -1275,9 +1292,10 @@ export class Dispatcher {
    */
   public requestDeleteWorktree(
     repository: Repository,
-    worktreePath: string
+    worktreePath: string,
+    checkout?: IDeferredCheckout
   ): void {
-    this.appStore._requestDeleteWorktree(repository, worktreePath)
+    this.appStore._requestDeleteWorktree(repository, worktreePath, checkout)
   }
 
   /**
@@ -1806,6 +1824,18 @@ export class Dispatcher {
   /** Lists the remotes for a repository. */
   public getRemotes(repository: Repository): Promise<ReadonlyArray<IRemote>> {
     return this.appStore._getRemotes(repository)
+  }
+
+  /**
+   * Pushes the current branch to the given remote instead of the one it
+   * tracks, optionally making the current branch track the pushed branch.
+   */
+  public pushToRemote(
+    repository: Repository,
+    remote: IRemote,
+    setUpstream: boolean
+  ): Promise<void> {
+    return this.appStore._pushToRemote(repository, remote, setUpstream)
   }
 
   /**
@@ -2645,6 +2675,10 @@ export class Dispatcher {
   public async performRetry(retryAction: RetryAction): Promise<void> {
     switch (retryAction.type) {
       case RetryActionType.Push:
+        if ('pushTarget' in retryAction) {
+          const { remote, setUpstream } = retryAction.pushTarget
+          return this.pushToRemote(retryAction.repository, remote, setUpstream)
+        }
         return this.push(retryAction.repository)
 
       case RetryActionType.Pull:
@@ -2785,6 +2819,16 @@ export class Dispatcher {
   /** Change the diff line wrapping setting */
   public onWrapDiffLinesChanged(wrapDiffLines: boolean) {
     return this.appStore._setWrapDiffLines(wrapDiffLines)
+  }
+
+  /** Change whether lists of changed files are shown as a tree */
+  public setFileTreeView(fileTreeView: boolean) {
+    return this.appStore._setFileTreeView(fileTreeView)
+  }
+
+  /** Show or hide the list/tree and list/graph view mode switches */
+  public toggleViewModeSwitchesVisibility() {
+    this.appStore._toggleViewModeSwitchesVisibility()
   }
 
   /** Install the global Git LFS filters. */
@@ -4734,6 +4778,22 @@ export class Dispatcher {
 
   public testPruneBranches() {
     return this.appStore._testPruneBranches()
+  }
+
+  /** Read the current account's token-expiration metadata for the test dialog. */
+  public getAccountTokenExpirationForTesting(account: Account) {
+    return this.appStore._getAccountTokenExpirationForTesting(account)
+  }
+
+  /** Change local token expiry for testing, or reset it by passing undefined. */
+  public setAccountTokenExpirationForTesting(
+    account: Account,
+    expiresAt: number | undefined
+  ) {
+    return this.appStore._setAccountTokenExpirationForTesting(
+      account,
+      expiresAt
+    )
   }
 
   public editGlobalGitConfig() {

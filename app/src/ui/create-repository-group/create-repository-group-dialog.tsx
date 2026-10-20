@@ -10,6 +10,8 @@ import { HighlightText } from '../lib/highlight-text'
 import { match } from '../../lib/fuzzy-find'
 import { AriaLiveContainer } from '../accessibility/aria-live-container'
 import * as octicons from '../octicons/octicons.generated'
+import { getGroupKey } from '../repositories-list/group-repositories'
+import { renameRepositoryGroupInOrder } from '../../lib/stores/repository-group-order'
 
 /**
  * Prefers the repo alias, otherwise falls back to the owner-qualified name
@@ -257,10 +259,22 @@ export class CreateRepositoryGroup extends React.Component<
         !selectedRepositoryIds.has(r.id)
     )
 
+    const newGroupExists = repositories.some(r => r.groupName === groupName)
+
     await dispatcher.changeRepositoriesGroupName(
       selectedRepositories,
       groupName
     )
+
+    // The repositories list only learns about the renamed repositories after
+    // they're read back from the database, which happens after this runs
+    if (editedGroupName !== undefined && editedGroupName !== groupName) {
+      renameRepositoryGroupInOrder(
+        getGroupKey({ kind: 'other', displayName: editedGroupName }),
+        getGroupKey({ kind: 'other', displayName: groupName }),
+        newGroupExists
+      )
+    }
 
     if (removedRepositories.length > 0) {
       await dispatcher.changeRepositoriesGroupName(removedRepositories, null)

@@ -2,8 +2,8 @@
 /// <reference path="./globals.d.ts" />
 
 import * as cp from 'child_process'
-import packager, { Options } from '@electron/packager'
 import frontMatter from 'front-matter'
+import * as os from 'os'
 import * as path from 'path'
 import { getPrintenvzPath } from 'printenvz'
 import { getProxyCommandPath } from 'process-proxy'
@@ -21,6 +21,19 @@ export interface ILicense {
   readonly featured: boolean
   readonly body: string
   readonly hidden: boolean
+}
+
+type DesktopPackageArch = 'arm64' | 'x64'
+type DesktopPackagePlatform = 'darwin' | 'linux' | 'win32'
+
+interface IDesktopPackagerModule {
+  readonly packager: (options: object) => Promise<ReadonlyArray<string>>
+}
+
+interface IOSXNotarizeOptions {
+  readonly appleApiKey: string
+  readonly appleApiKeyId: string
+  readonly appleApiIssuer: string
 }
 
 import {
@@ -56,6 +69,7 @@ import assert from 'assert'
 import { copyCopilotDependency } from './copilot'
 import { removeCurlVersionRequirements } from './remove-curl-version-requirements'
 import { pruneCopilotDependency } from './copilot-prune'
+import { assertRelocatableSymlinks } from './verify-symlinks'
 
 // Always use ad-hoc code signing ('-'), even for published builds, to avoid "app is damaged" error.
 // This is the friendliest non-paid option.
@@ -129,6 +143,13 @@ verifyInjectedSassVariables(outRoot)
     console.log('Packaging…')
     return packageApp()
   })
+  .then(appPaths => {
+    console.log('Verifying symlinks…')
+    for (const appPath of appPaths) {
+      assertRelocatableSymlinks(appPath)
+    }
+    return appPaths
+  })
   .catch(err => {
     console.error(err)
     process.exit(1)
@@ -137,10 +158,15 @@ verifyInjectedSassVariables(outRoot)
     console.log(`Built to ${appPaths}`)
   })
 
-function packageApp() {
+async function packageApp() {
+  const packagerModuleName = '@electron/packager'
+  const { packager }: IDesktopPackagerModule = await import(packagerModuleName)
+
   // not sure if this is needed anywhere, so I'm just going to inline it here
   // for now and see what the future brings...
-  const toPackagePlatform = (platform: NodeJS.Platform) => {
+  const toPackagePlatform = (
+    platform: NodeJS.Platform
+  ): DesktopPackagePlatform => {
     if (platform === 'win32' || platform === 'darwin' || platform === 'linux') {
       return platform
     }
@@ -149,15 +175,19 @@ function packageApp() {
     )
   }
 
-  const getPackageArch = (): 'arm64' | 'x64' => {
-    const arch = process.env.npm_config_arch || process.arch
+  const toPackageArch = (
+    targetArch: string | undefined
+  ): DesktopPackageArch => {
+    if (targetArch === undefined) {
+      targetArch = os.arch()
+    }
 
-    if (arch === 'arm64' || arch === 'x64') {
-      return arch
+    if (targetArch === 'arm64' || targetArch === 'x64') {
+      return targetArch
     }
 
     throw new Error(
-      `Building Desktop for architecture '${arch}' is not supported. Currently these architectures are supported: arm64, x64`
+      `Building Desktop for architecture '${targetArch}' is not supported`
     )
   }
 
@@ -172,7 +202,7 @@ function packageApp() {
   ) {
     // we can't publish a mac build without these
     throw new Error(
-      'Unable to retreive appleId and/or appleIdPassword to notarize macOS build'
+      'Unable to retrieve appleApiKey, appleApiKeyId, and/or appleApiIssuer to notarize macOS build'
     )
   }
 
@@ -186,7 +216,7 @@ function packageApp() {
   return packager({
     name: getExecutableName(),
     platform: toPackagePlatform(process.platform),
-    arch: getPackageArch(),
+    arch: toPackageArch(process.env.npm_config_arch),
     asar: false, // TODO: Probably wanna enable this down the road.
     out: getDistRoot(),
     icon: getIcon(),
@@ -194,7 +224,10 @@ function packageApp() {
     dir: outRoot,
     overwrite: true,
     tmpdir: false,
-    derefSymlinks: false,
+    // Windows' git has no symlinks to preserve, and patch-package (which makes
+    // the packager keep symlinks relative) doesn't run there.
+    // TODO: Make this 'false' once https://github.com/electron/packager/pull/1964 is merged and released.
+    derefSymlinks: process.platform === 'win32',
     prune: false, // We'll prune them ourselves below.
     // @electron/get re-downloads SHASUMS256.txt on every run, even when the
     // Electron zip is already in its cache, so validating it would defeat the
@@ -520,14 +553,14 @@ ${licenseText}`
   rmSync(chooseALicense, { recursive: true, force: true })
 }
 
-function getNotarizationOptions(): Options['osxNotarize'] {
+function getNotarizationOptions(): IOSXNotarizeOptions | undefined {
   const {
-    APPLE_ID: appleId,
-    APPLE_ID_PASSWORD: appleIdPassword,
-    APPLE_TEAM_ID: teamId,
+    APPLE_API_KEY_PATH: appleApiKey,
+    APPLE_API_KEY_ID: appleApiKeyId,
+    APPLE_API_ISSUER: appleApiIssuer,
   } = process.env
 
-  return appleId && appleIdPassword && teamId
-    ? { appleId, appleIdPassword, teamId }
+  return appleApiKey && appleApiKeyId && appleApiIssuer
+    ? { appleApiKey, appleApiKeyId, appleApiIssuer }
     : undefined
 }

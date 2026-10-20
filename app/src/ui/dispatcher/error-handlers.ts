@@ -51,6 +51,17 @@ function asErrorWithCode(error: Error): IErrorWithCode | null {
 }
 
 /**
+ * Whether the error comes from pushing to a remote other than the one tracked
+ * by the current branch.
+ */
+function isPushToTargetRemote(error: ErrorWithMetadata): boolean {
+  const { retryAction } = error.metadata
+  return (
+    retryAction?.type === RetryActionType.Push && 'pushTarget' in retryAction
+  )
+}
+
+/**
  * Cast the error to an error with metadata if possible. Otherwise return null.
  */
 function asErrorWithMetadata(error: Error): ErrorWithMetadata | null {
@@ -185,6 +196,11 @@ export async function pushNeedsPullHandler(
 ): Promise<Error | null> {
   const e = asErrorWithMetadata(error)
   if (!e) {
+    return error
+  }
+
+  // Pulling would integrate the tracked remote branch, not the pushed one
+  if (isPushToTargetRemote(e)) {
     return error
   }
 
@@ -437,6 +453,11 @@ export async function refusedWorkflowUpdate(
     return error
   }
 
+  // The dialog retries with a regular push to the tracked remote
+  if (isPushToTargetRemote(e)) {
+    return error
+  }
+
   const gitError = asGitError(e.underlyingError)
   if (!gitError) {
     return error
@@ -551,6 +572,11 @@ export async function insufficientGitHubRepoPermissions(
   }
 
   if (retryAction === undefined || retryAction.type !== RetryActionType.Push) {
+    return error
+  }
+
+  // The fork would be created for the repository's default remote instead
+  if (isPushToTargetRemote(e)) {
     return error
   }
 

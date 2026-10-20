@@ -11,24 +11,20 @@ import {
   fetchUser,
   getDotComAPIEndpoint,
   getEnterpriseAPIURL,
-  requestOAuthToken,
   getOAuthAuthorizationURL,
+  getHTMLURL,
   BitbucketCloudAPIEndpoint,
   getBitbucketOAuthAuthorizationURL,
-  requestOAuthTokenBitbucket,
   CodebergCloudAPIEndpoint,
   getCodebergOAuthAuthorizationURL,
   GitLabCloudAPIEndpoint,
   getGitLabOAuthAuthorizationURL,
-  requestOAuthTokenCodeberg,
-  requestOAuthTokenGitLab,
   GitLabApiPath,
   ForgejoApiPath,
   GitLabRequiredScopes,
   ForgejoRequiredScopes,
   GiteaCloudAPIEndpoint,
   getGiteaOAuthAuthorizationURL,
-  requestOAuthTokenGitea,
   GiteaApiPath,
   GiteaRequiredScopes,
 } from '../../lib/api'
@@ -42,6 +38,8 @@ import noop from 'lodash/noop'
 import { AccountsStore } from './accounts-store'
 import { RepoType } from '../../models/github-repository'
 import { isGHES } from '../endpoint-capabilities'
+import { exchangeOAuthToken, IOAuthToken } from '../oauth-token'
+import { exchangeThirdPartyOAuthToken } from '../third-party-oauth-token'
 
 /**
  * An enumeration of the possible steps that the sign in
@@ -389,6 +387,7 @@ export type SignInResult =
  */
 export class SignInStore extends TypedBaseStore<SignInState | null> {
   private state: SignInState | null = null
+  private resolvingOAuthState: string | undefined
 
   private accounts: ReadonlyArray<Account> = []
 
@@ -493,6 +492,19 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     }
 
     this.setState({ ...currentState, loading: true })
+    const loadingState = this.state
+
+    const conflict = await this.accountStore.findApiTypeConflict(
+      currentState.endpoint,
+      currentState.apiType
+    )
+    if (this.state !== loadingState) {
+      return
+    }
+    if (conflict !== null) {
+      this.setState({ ...currentState, loading: false, error: conflict })
+      return
+    }
 
     if (currentState.kind === SignInStep.ExistingAccountWarning) {
       const { existingAccount } = currentState
@@ -540,7 +552,10 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       )
     })
       .then(account => {
-        if (!this.state || this.state.kind !== SignInStep.Authentication) {
+        if (
+          this.state?.kind !== SignInStep.Authentication ||
+          this.state.oauthState?.state !== csrfToken
+        ) {
           // Looks like the sign in flow has been aborted
           log.warn('[SignInStore] account resolved but session has changed')
           return
@@ -605,52 +620,75 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       return
     }
 
-    const { endpoint, apiType } = this.state
-    const tokenData = await this.getOauthTokenData(
-      this.state.oauthState.oauthProvider,
-      endpoint,
-      action.code,
-      this.state.oauthState.codeVerifier
-    )
-
-    if (tokenData) {
-      const [token, refreshToken, expiresAt] = tokenData
+    const { endpoint, apiType, oauthState } = this.state
+    if (this.resolvingOAuthState === oauthState.state) {
+      return
+    }
+    this.resolvingOAuthState = oauthState.state
+    // False once the user cancels, restarts, or leaves this browser sign-in.
+    const isSignInAttemptActive = () =>
+      this.state?.kind === SignInStep.Authentication &&
+      this.state.oauthState === oauthState
+    let unpublished: IOAuthToken | undefined
+    try {
+      const credential = await this.exchangeOAuthCode(
+        oauthState.oauthProvider,
+        endpoint,
+        action.code,
+        oauthState.codeVerifier
+      )
+      unpublished = credential
+      if (!isSignInAttemptActive()) {
+        return
+      }
       const account = await fetchUser(
         endpoint,
         apiType,
-        token,
-        refreshToken,
-        expiresAt,
+        credential.accessToken,
         UnknownLogin.InitialAuthFetch
       )
-      this.state.oauthState.onAuthCompleted(account)
-    } else {
-      this.state.oauthState.onAuthError(
-        new Error('Failed retrieving authenticated user')
-      )
+      if (!isSignInAttemptActive()) {
+        return
+      }
+      const stored = await this.accountStore.addAccount(account, credential)
+      if (stored !== null) {
+        unpublished = undefined
+      }
+      if (!isSignInAttemptActive()) {
+        return
+      }
+      if (stored === null) {
+        throw new Error(
+          'Unable to save your credentials. Please try signing in again.'
+        )
+      }
+      oauthState.onAuthCompleted(stored)
+    } catch (e) {
+      oauthState.onAuthError(e)
+    } finally {
+      if (this.resolvingOAuthState === oauthState.state) {
+        this.resolvingOAuthState = undefined
+      }
+      if (unpublished !== undefined) {
+        void this.accountStore.revokeUnusedToken({
+          endpoint,
+          apiType,
+          token: unpublished.accessToken,
+        })
+      }
     }
   }
 
-  private async getOauthTokenData(
+  private async exchangeOAuthCode(
     oauthProvider: OAuthProvider,
     endpoint: string,
     code: string,
     codeVerifier: string
-  ) {
-    switch (oauthProvider) {
-      case 'github':
-        return await requestOAuthToken(endpoint, code, codeVerifier)
-      case 'bitbucket':
-        return await requestOAuthTokenBitbucket(code, codeVerifier)
-      case 'gitlab':
-        return await requestOAuthTokenGitLab(code, codeVerifier)
-      case 'forgejo':
-        return await requestOAuthTokenCodeberg(code, codeVerifier)
-      case 'gitea':
-        return await requestOAuthTokenGitea(code, codeVerifier)
-      default:
-        assertNever(oauthProvider, 'Unexpected oauth provider')
+  ): Promise<IOAuthToken> {
+    if (oauthProvider === 'github') {
+      return exchangeOAuthToken(getHTMLURL(endpoint), code, codeVerifier)
     }
+    return exchangeThirdPartyOAuthToken(oauthProvider, code, codeVerifier)
   }
 
   /**
@@ -903,8 +941,6 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
         endpoint,
         apiType,
         token,
-        '',
-        0,
         UnknownLogin.InitialAuthFetch
       )
     } catch (e) {
@@ -925,7 +961,24 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       return
     }
 
-    this.emitAuthenticate(account)
+    const stored = await this.accountStore.addAccount(account)
+    if (this.state !== loadingState) {
+      log.warn('[SignInStore] account saved but session has changed')
+      return
+    }
+
+    if (stored === null) {
+      this.setState({
+        ...currentState,
+        loading: false,
+        error: new Error(
+          'Unable to save your credentials. Please try signing in again.'
+        ),
+      })
+      return
+    }
+
+    this.emitAuthenticate(stored)
     this.setState({ kind: SignInStep.Success, resultCallback })
   }
 }

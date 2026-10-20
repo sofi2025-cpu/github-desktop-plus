@@ -109,6 +109,12 @@ export interface IAppState {
   readonly recentRepositories: ReadonlyArray<number>
 
   /**
+   * The ids of the repositories hidden from the repository list until a given
+   * time, mapped to that time in milliseconds since the epoch
+   */
+  readonly snoozedRepositories: ReadonlyMap<number, number>
+
+  /**
    * A cache of the latest repository state values, keyed by the repository id
    */
   readonly localRepositoryStateLookup: Map<number, ILocalRepositoryState>
@@ -316,6 +322,12 @@ export interface IAppState {
 
   /** Whether text diff lines should wrap within the viewport */
   readonly wrapDiffLines: boolean
+
+  /** Whether lists of changed files are shown as a tree of folders */
+  readonly fileTreeView: boolean
+
+  /** Whether the list/tree and list/graph view mode switches are shown */
+  readonly showViewModeSwitches: boolean
 
   /** The user's preferred shell. */
   readonly selectedShell: Shell
@@ -1038,6 +1050,12 @@ export interface ICompareState {
 
   /** The SHAs of commits to render in the compare list */
   readonly filteredHistoryCommitSHAs: ReadonlyArray<string>
+
+  /**
+   * The search query that `filteredHistoryCommitSHAs` was filtered with, which
+   * can lag behind `commitSearchQuery` while a new search is being applied.
+   */
+  readonly filteredHistoryCommitSearchQuery: string
 
   readonly allHistoryCommitSHAs: ReadonlyArray<string>
 

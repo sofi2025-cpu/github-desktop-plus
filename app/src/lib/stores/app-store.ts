@@ -70,7 +70,6 @@ import {
   Account,
   CopilotLicenseTypeNoAccess,
   isDotComAccount,
-  UnknownLogin,
 } from '../../models/account'
 import { AppMenu, IMenu } from '../../models/app-menu'
 import { Author } from '../../models/author'
@@ -173,9 +172,9 @@ import {
   IAPIFullRepository,
   IAPIComment,
   IAPIRepoRuleset,
-  deleteToken,
   IAPICreatePushProtectionBypassResponse,
 } from '../api'
+import { revokeAccountToken } from '../third-party-oauth-token'
 import { shell } from '../app-shell'
 import {
   CompareAction,
@@ -214,7 +213,6 @@ import {
 import {
   canNarrowExistingResults,
   commitMatchesSearchFilter,
-  ICommitSearchFilter,
   isCommitSearchFilterEmpty,
   parseCommitSearchFilter,
 } from '../commit-search-filter'
@@ -302,6 +300,7 @@ import {
 } from '../repository-matching'
 import { ForcePushBranchState, getCurrentBranchForcePushState } from '../rebase'
 import { RetryAction, RetryActionType } from '../../models/retry-actions'
+import { IPushTarget } from '../../models/retry-actions'
 import {
   Default as DefaultShell,
   findShellOrDefault,
@@ -431,6 +430,7 @@ import {
   setShowSideBySideDiff,
   setWrapDiffLines,
 } from '../../ui/lib/diff-mode'
+import { getFileTreeView, setFileTreeView } from '../../ui/lib/file-tree-folder'
 import {
   abortCherryPick,
   cherryPick,
@@ -504,11 +504,24 @@ import {
   findPullRequestsByNumbers,
 } from '../pull-request-refs'
 import { resolveWithin } from '../path'
-import { WorktreeEntry } from '../../models/worktree'
+import {
+  IDeferredCheckout,
+  IDeleteWorktreeOptions,
+  WorktreeEntry,
+} from '../../models/worktree'
 import { shouldShowWorktreeDropdown } from '../worktree-dropdown'
-import type { Model } from '@github/copilot-sdk/dist/generated/rpc'
+import type { Model } from '../copilot/types'
+import {
+  areSnoozesEqual,
+  getActiveSnoozes,
+  getSnoozedRepositories,
+  setSnoozedRepositories,
+} from './repository-snoozing'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
+
+/** Keeps the snooze expiry timer within setTimeout's 32-bit delay limit */
+const MaxSnoozeExpiryDelay = 24 * 60 * 60 * 1000
 
 /**
  * Upper bound on how many pull requests we'll resolve (across both sides)
@@ -684,12 +697,19 @@ const selectedCopilotModelsKey = 'selected-copilot-models'
 const selectedCopilotModelsByAccountKey = 'selected-copilot-models-by-account'
 export const showChangesFilterDefault = true
 
+const showViewModeSwitchesKey = 'show-view-mode-switches'
+const showViewModeSwitchesDefault = true
+
 export class AppStore extends TypedBaseStore<IAppState> {
   private readonly gitStoreCache: GitStoreCache
 
   private accounts: ReadonlyArray<Account> = new Array<Account>()
   private repositories: ReadonlyArray<Repository> = new Array<Repository>()
   private recentRepositories: ReadonlyArray<number> = new Array<number>()
+
+  /** The ids of the snoozed repositories, mapped to when their snooze ends */
+  private snoozedRepositories: ReadonlyMap<number, number> = new Map()
+  private snoozeExpiryTimeoutId: number | null = null
 
   private selectedRepository: Repository | CloningRepository | null = null
 
@@ -781,6 +801,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private showSideBySideDiff: boolean = ShowSideBySideDiffDefault
   private showDiffMinimap: boolean = ShowDiffMinimapDefault
   private wrapDiffLines: boolean = WrapDiffLinesDefault
+  private fileTreeView: boolean = false
+  private showViewModeSwitches: boolean = showViewModeSwitchesDefault
 
   private uncommittedChangesStrategy = defaultUncommittedChangesStrategy
 
@@ -973,9 +995,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
       }
     }, InitialRepositoryIndicatorTimeout)
 
-    API.onTokenInvalidated(this.onTokenInvalidated)
-    API.onTokenRefreshed(this.onTokenRefreshed)
-
     this.notificationsStore.onChecksFailedNotification(
       this.onChecksFailedNotification
     )
@@ -1034,64 +1053,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     return zoomFactor
-  }
-
-  private onTokenInvalidated = (
-    endpoint: string,
-    token: string,
-    login: string | UnknownLogin
-  ) => {
-    if (login === UnknownLogin.InitialAuthFetch) {
-      console.error('The token for initial account fetch was invalidated!')
-      return
-    }
-
-    const account = getAccountForEndpoint(this.accounts, endpoint, login)
-
-    if (account === null) {
-      return
-    }
-
-    // If we have a token for the account but it doesn't match the token that
-    // was invalidated that likely means that someone held onto an account for
-    // longer than they should have which is bad but what's even worse is if we
-    // invalidate an active account.
-    if (account.token && account.token !== token) {
-      log.error(`Token for ${endpoint} invalidated but token mismatch`)
-      return
-    }
-
-    // If the token was invalidated for an account, sign out from that account
-    this._removeAccount(account)
-
-    this._showPopup({
-      type: PopupType.InvalidatedToken,
-      account,
-    })
-  }
-
-  private onTokenRefreshed = async (
-    endpoint: string,
-    token: string,
-    refreshToken: string,
-    tokenExpiresAt: number,
-    login: string | UnknownLogin
-  ) => {
-    if (login === UnknownLogin.InitialAuthFetch) {
-      console.error('Attempted to refresh token for initial account fetch!')
-      return
-    }
-
-    const account = getAccountForEndpoint(this.accounts, endpoint, login)
-    if (account === null) {
-      return
-    }
-    const updatedAccount = account.withRefreshToken(
-      token,
-      refreshToken,
-      tokenExpiresAt
-    )
-    await this._updateAccount(updatedAccount)
   }
 
   private onShowInstallingUpdate = () => {
@@ -1211,12 +1172,17 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.cloningRepositoriesStore.onDidError(e => this.emitError(e))
 
-    this.signInStore.onDidAuthenticate(account => this._addAccount(account))
+    this.signInStore.onDidAuthenticate(account =>
+      this.onDidAuthenticate(account)
+    )
     this.signInStore.onDidUpdate(() => this.emitUpdate())
     this.signInStore.onDidError(error => this.emitError(error))
 
     this.accountsStore.onDidUpdate(accounts => {
       this.accounts = accounts
+      this.statsStore.setUsesShortLivedToken(
+        accounts.some(account => this.accountsStore.isRefreshable(account))
+      )
       this.syncCopilotModelsFromCache()
       this.syncCopilotQuotaSnapshotsFromCache()
       this.updateCopilotModelsForCurrentAccount()
@@ -1232,6 +1198,20 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.emitUpdate()
     })
     this.accountsStore.onDidError(error => this.emitError(error))
+    this.accountsStore.onTokenRefreshEvent(event => {
+      void this.statsStore.recordTokenRefreshEvent(event).catch(error => {
+        log.error('Failed recording token refresh stats', error)
+      })
+    })
+    this.accountsStore.onTokenInvalidated(account => {
+      this.repositoriesStore
+        .clearGitHubRepositoryLoginForEndpointAndLogin(
+          account.endpoint,
+          account.login
+        )
+        .catch(e => log.error('Failed to clear repository login', e))
+      this._showPopup({ type: PopupType.InvalidatedToken, account })
+    })
 
     this.repositoriesStore.onDidUpdate(updateRepositories => {
       this.repositories = updateRepositories
@@ -1451,6 +1431,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       accounts: this.accounts,
       repositories,
       recentRepositories: this.recentRepositories,
+      snoozedRepositories: this.snoozedRepositories,
       localRepositoryStateLookup: this.localRepositoryStateLookup,
       windowState: this.windowState,
       windowZoomFactor: this.windowZoomFactor,
@@ -1503,6 +1484,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
       showSideBySideDiff: this.showSideBySideDiff,
       showDiffMinimap: this.showDiffMinimap,
       wrapDiffLines: this.wrapDiffLines,
+      fileTreeView: this.fileTreeView,
+      showViewModeSwitches: this.showViewModeSwitches,
       selectedShell: this.selectedShell,
       repositoryFilterText: this.repositoryFilterText,
       resolvedExternalEditor: this.resolvedExternalEditor,
@@ -2050,9 +2033,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
         return
       }
 
-      const searchFilter = parseCommitSearchFilter(
-        compareState.commitSearchQuery
-      )
+      const { commitSearchQuery } =
+        this.repositoryStateCache.get(repository).compareState
+      const searchFilter = parseCommitSearchFilter(commitSearchQuery)
       const filteredCommits = commits.filter(sha =>
         commitMatchesSearchFilter(gitStore.commitLookup.get(sha), searchFilter)
       )
@@ -2066,6 +2049,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
         formState: fromInitialize ? oldState.formState : historyState,
         allHistoryCommitSHAs: commits,
         filteredHistoryCommitSHAs: filteredCommits,
+        filteredHistoryCommitSearchQuery: commitSearchQuery,
         filterText: fromInitialize ? oldState.filterText : '',
         showBranchList: fromInitialize ? oldState.showBranchList : true,
       }))
@@ -2077,11 +2061,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
         this.emitUpdate()
       }
       if (filteredCommits.length < MinimumFilteredCommitsToLoad) {
-        await this._loadNextCommitBatch(
-          repository,
-          filteredCommits.length,
-          searchFilter
-        )
+        await this._loadNextCommitBatch(repository, filteredCommits.length)
       }
       if (action.kind === HistoryTabMode.Compare) {
         // A branch comparison is active, recompute
@@ -2218,19 +2198,16 @@ export class AppStore extends TypedBaseStore<IAppState> {
   /** This shouldn't be called directly. See `Dispatcher`. */
   public async _loadNextCommitBatch(
     repository: Repository,
-    alreadyFiltered: number,
-    searchFilter?: ICommitSearchFilter
+    alreadyFiltered: number
   ): Promise<void> {
     const gitStore = this.gitStoreCache.get(repository)
 
     const state = this.repositoryStateCache.get(repository)
     const commits = state.compareState.allHistoryCommitSHAs
-    if (searchFilter === undefined) {
-      searchFilter = parseCommitSearchFilter(
-        state.compareState.commitSearchQuery
-      )
-    }
-    const isSearching = !isCommitSearchFilterEmpty(searchFilter)
+    const { filteredHistoryCommitSearchQuery } = state.compareState
+    const isSearching = !isCommitSearchFilterEmpty(
+      parseCommitSearchFilter(filteredHistoryCommitSearchQuery)
+    )
 
     const tip = state.branchesState.tip
 
@@ -2257,6 +2234,16 @@ export class AppStore extends TypedBaseStore<IAppState> {
       return
     }
 
+    const latestCompareState =
+      this.repositoryStateCache.get(repository).compareState
+    if (latestCompareState.allHistoryCommitSHAs !== commits) {
+      // The history list was replaced or extended while this batch was loading
+      return
+    }
+
+    // The search may have changed while the batch was loading
+    const searchQuery = latestCompareState.filteredHistoryCommitSearchQuery
+    const searchFilter = parseCommitSearchFilter(searchQuery)
     const newFilteredCommits = newCommits.filter(sha =>
       commitMatchesSearchFilter(gitStore.commitLookup.get(sha), searchFilter)
     )
@@ -2264,19 +2251,25 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.repositoryStateCache.updateCompareState(repository, () => ({
       allHistoryCommitSHAs: commits.concat(newCommits),
       filteredHistoryCommitSHAs:
-        state.compareState.filteredHistoryCommitSHAs.concat(newFilteredCommits),
+        latestCompareState.filteredHistoryCommitSHAs.concat(newFilteredCommits),
     }))
 
-    const numFilteredCommits = alreadyFiltered + newFilteredCommits.length
     if (newFilteredCommits.length > 0) {
       this.emitUpdate()
     }
+
+    if (latestCompareState.commitSearchQuery !== searchQuery) {
+      // A pending search query update will refilter and load more if needed
+      return
+    }
+
+    const numFilteredCommits =
+      (searchQuery === filteredHistoryCommitSearchQuery
+        ? alreadyFiltered
+        : latestCompareState.filteredHistoryCommitSHAs.length) +
+      newFilteredCommits.length
     if (numFilteredCommits < MinimumFilteredCommitsToLoad) {
-      return this._loadNextCommitBatch(
-        repository,
-        numFilteredCommits,
-        searchFilter
-      )
+      return this._loadNextCommitBatch(repository, numFilteredCommits)
     }
     return
   }
@@ -2536,14 +2529,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
     repository: Repository,
     query: string
   ): Promise<void> {
-    const state = this.repositoryStateCache.get(repository)
-    const compareState = state.compareState
-    const searchFilter = parseCommitSearchFilter(query)
-    const isIncrementalSearch = canNarrowExistingResults(
-      compareState.commitSearchQuery,
-      query
-    )
-
     this.repositoryStateCache.updateCompareState(repository, () => ({
       commitSearchQuery: query,
     }))
@@ -2552,6 +2537,18 @@ export class AppStore extends TypedBaseStore<IAppState> {
       await this.currentCommitFilterPromise
     }
 
+    const state = this.repositoryStateCache.get(repository)
+    const compareState = state.compareState
+    if (compareState.commitSearchQuery !== query) {
+      // A newer search query superseded this one while we were waiting
+      return
+    }
+
+    const searchFilter = parseCommitSearchFilter(query)
+    const isIncrementalSearch = canNarrowExistingResults(
+      compareState.filteredHistoryCommitSearchQuery,
+      query
+    )
     const candidateCommitSHAs = isIncrementalSearch
       ? compareState.filteredHistoryCommitSHAs
       : compareState.allHistoryCommitSHAs
@@ -2562,13 +2559,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
         )
     this.repositoryStateCache.updateCompareState(repository, () => ({
       filteredHistoryCommitSHAs: filteredCommitSHAs,
+      filteredHistoryCommitSearchQuery: query,
     }))
     this.emitUpdate()
     if (filteredCommitSHAs.length < MinimumFilteredCommitsToLoad) {
       this.currentCommitFilterPromise = this._loadNextCommitBatch(
         repository,
-        filteredCommitSHAs.length,
-        searchFilter
+        filteredCommitSHAs.length
       )
       await this.currentCommitFilterPromise
       this.currentCommitFilterPromise = null
@@ -2722,6 +2719,14 @@ export class AppStore extends TypedBaseStore<IAppState> {
       (!(repository instanceof Repository) || !repository.isTutorialRepository)
     ) {
       this.currentOnboardingTutorialStep = TutorialStep.NotApplicable
+    }
+
+    // Selecting a snoozed repository means the user wants to work on it again
+    if (
+      repository instanceof Repository &&
+      this.snoozedRepositories.has(repository.id)
+    ) {
+      this.removeSnooze(repository)
     }
 
     this.selectedRepository = repository
@@ -3046,7 +3051,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.accounts = accounts
     this.repositories = repositories
+    this.statsStore.setUsesShortLivedToken(
+      accounts.some(account => this.accountsStore.isRefreshable(account))
+    )
     this.alwaysShowWorktreeList = getBoolean(alwaysShowWorktreeListKey, false)
+    this.refreshSnoozedRepositories()
 
     // Must be read before selecting the initial repository, since that's what
     // populates the list of visible recent repositories.
@@ -3203,6 +3212,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.showSideBySideDiff = getShowSideBySideDiff()
     this.showDiffMinimap = getShowDiffMinimap()
     this.wrapDiffLines = getWrapDiffLines()
+    this.fileTreeView = getFileTreeView()
+    this.showViewModeSwitches = getBoolean(
+      showViewModeSwitchesKey,
+      showViewModeSwitchesDefault
+    )
 
     this.selectedTheme = getPersistedThemeName()
     // Make sure the persisted theme is applied
@@ -3581,6 +3595,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       gitHubRepositoryEndpoint: isGitHub
         ? selectedRepository.gitHubRepository.endpoint
         : null,
+      isViewModeSwitchesVisible: this.showViewModeSwitches,
     }
 
     if (state === null) {
@@ -3644,6 +3659,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
       if (!newSelectedRepository) {
         newSelectedRepository = this.repositories[0]
+      }
+
+      if (this.snoozedRepositories.has(newSelectedRepository.id)) {
+        newSelectedRepository = this.getFirstUnsnoozedRepository()
       }
     }
 
@@ -5024,7 +5043,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.selectedRepository instanceof Repository
         ? this.selectedRepository.id
         : null
-    return this.repositories.filter(x => x.id !== selectedRepositoryID)
+    return this.repositories
+      .filter(x => x.id !== selectedRepositoryID)
+      .filter(x => !this.snoozedRepositories.has(x.id))
   }
 
   /**
@@ -5507,10 +5528,23 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     // If the branch is checked out in another worktree, switch to that worktree
-    // instead of checking out the branch in the current worktree.
-    const wt = repositoryState.worktrees.find(wt => wt.branch === branch.ref)
+    // instead of checking out the branch in the current worktree. Git considers
+    // a branch held by a worktree whose folder has gone to still be in use, so
+    // that worktree has to be removed before the branch can be checked out.
+    await this._refreshWorktrees(repository)
+    const wt = this.repositoryStateCache
+      .get(repository)
+      .worktrees.find(wt => wt.branch === branch.ref)
 
     if (wt) {
+      if (wt.isPrunable) {
+        this._requestDeleteWorktree(repository, wt.path, {
+          branch,
+          strategy: explicitStrategy,
+        })
+        return repository
+      }
+
       return this._switchWorktree(repository, wt)
     }
 
@@ -5928,6 +5962,87 @@ export class AppStore extends TypedBaseStore<IAppState> {
   }
 
   /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _snoozeRepository(
+    repository: Repository,
+    until: number
+  ): Promise<void> {
+    // Re-read from storage so we don't drop changes made in other windows
+    const snoozed = new Map(getSnoozedRepositories())
+    snoozed.set(repository.id, until)
+    setSnoozedRepositories(snoozed)
+    this.refreshSnoozedRepositories()
+    this.emitUpdate()
+
+    if (
+      this.selectedRepository instanceof Repository &&
+      this.selectedRepository.id === repository.id
+    ) {
+      await this._selectRepository(this.getFirstUnsnoozedRepository())
+    }
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _unsnoozeRepository(repository: Repository): Promise<void> {
+    this.removeSnooze(repository)
+    this.emitUpdate()
+
+    // Its indicators went stale while it wasn't being refreshed
+    this.refreshIndicatorForRepository(repository, false).catch(e =>
+      log.error('Failed refreshing indicator of unsnoozed repository', e)
+    )
+  }
+
+  private removeSnooze(repository: Repository) {
+    const snoozed = new Map(getSnoozedRepositories())
+    snoozed.delete(repository.id)
+    setSnoozedRepositories(snoozed)
+    this.refreshSnoozedRepositories()
+  }
+
+  private getFirstUnsnoozedRepository(): Repository | null {
+    return (
+      this.repositories.find(r => !this.snoozedRepositories.has(r.id)) ?? null
+    )
+  }
+
+  /**
+   * Reloads the snoozed repositories from storage, dropping the expired ones,
+   * and schedules the next refresh for when the earliest snooze ends.
+   *
+   * Returns whether the snoozed repositories changed.
+   */
+  private refreshSnoozedRepositories(): boolean {
+    const stored = getSnoozedRepositories()
+    const active = getActiveSnoozes(stored, Date.now())
+    if (active.size !== stored.size) {
+      setSnoozedRepositories(active)
+    }
+    // Keeps the reference stable so the repository list stays memoized
+    const changed = !areSnoozesEqual(active, this.snoozedRepositories)
+    if (changed) {
+      this.snoozedRepositories = active
+    }
+
+    if (this.snoozeExpiryTimeoutId !== null) {
+      window.clearTimeout(this.snoozeExpiryTimeoutId)
+      this.snoozeExpiryTimeoutId = null
+    }
+
+    if (active.size > 0) {
+      const nextExpiry = Math.min(...active.values())
+      const delay = Math.min(nextExpiry - Date.now(), MaxSnoozeExpiryDelay)
+      this.snoozeExpiryTimeoutId = window.setTimeout(() => {
+        this.snoozeExpiryTimeoutId = null
+        if (this.refreshSnoozedRepositories()) {
+          this.emitUpdate()
+        }
+      }, Math.max(delay, 0))
+    }
+
+    return changed
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
   public async _renameBranch(
     repository: Repository,
     branch: Branch,
@@ -6221,6 +6336,23 @@ export class AppStore extends TypedBaseStore<IAppState> {
     })
   }
 
+  /**
+   * Pushes the current branch to the given remote instead of the one it
+   * tracks.
+   *
+   * @param setUpstream - Whether the current branch should track the pushed
+   *                      branch from now on.
+   */
+  public async _pushToRemote(
+    repository: Repository,
+    remote: IRemote,
+    setUpstream: boolean
+  ): Promise<void> {
+    return this.withRefreshedGitHubRepository(repository, repository => {
+      return this.performPush(repository, undefined, { remote, setUpstream })
+    })
+  }
+
   private getBranchToPush(
     repository: Repository,
     options?: PushOptions
@@ -6248,12 +6380,27 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return
   }
 
+  /**
+   * The remote branch to push the given branch to, or null to push it to a
+   * branch with the same name and set it as its upstream.
+   */
+  private getRemoteBranchToPush(
+    branch: Branch,
+    target?: IPushTarget
+  ): string | null {
+    if (target === undefined) {
+      return branch.upstreamWithoutRemote
+    }
+    return target.setUpstream ? null : branch.name
+  }
+
   private async performPush(
     repository: Repository,
-    options?: PushOptions
+    options?: PushOptions,
+    target?: IPushTarget
   ): Promise<void> {
     const state = this.repositoryStateCache.get(repository)
-    const { remote } = state
+    const remote = target?.remote ?? state.remote
     if (remote === null) {
       this._showPopup({
         type: PopupType.PublishRepository,
@@ -6270,7 +6417,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
         return
       }
 
-      const remoteName = branch.upstreamRemoteName || remote.name
+      const remoteName = target
+        ? remote.name
+        : branch.upstreamRemoteName || remote.name
 
       const pushTitle = `Pushing to ${remoteName}`
 
@@ -6301,6 +6450,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       const retryAction: RetryAction = {
         type: RetryActionType.Push,
         repository,
+        ...(target ? { pushTarget: target } : {}),
       }
 
       // This is most likely not necessary and is only here out of
@@ -6349,7 +6499,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
             repository,
             safeRemote,
             branch.name,
-            branch.upstreamWithoutRemote,
+            this.getRemoteBranchToPush(branch, target),
             gitStore.tagsToPush,
             {
               onHookFailure: this.onHookFailure(() => (aborted = true)),
@@ -6368,7 +6518,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
             return
           }
 
-          gitStore.clearTagsToPush()
+          // Keep the tags queued so they also reach the tracked remote later
+          if (target === undefined || target.setUpstream) {
+            gitStore.clearTagsToPush()
+          }
 
           await gitStore.fetchRemotes([safeRemote], false, fetchProgress => {
             this.updatePushPullFetchProgress(repository, {
@@ -6601,7 +6754,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   public async _pullAllRepositories(): Promise<void> {
     const repositories = await this.repositoriesStore.getAll()
-    return this._pullRepositories(repositories)
+    return this._pullRepositories(
+      repositories.filter(r => !this.snoozedRepositories.has(r.id))
+    )
   }
 
   public async _pullRepositories(
@@ -7370,16 +7525,23 @@ export class AppStore extends TypedBaseStore<IAppState> {
   /** This shouldn't be called directly. See 'Dispatcher'. */
   public _requestDeleteWorktree(
     repository: Repository,
-    worktreePath: string
+    worktreePath: string,
+    checkout?: IDeferredCheckout
   ): void {
-    if (this.confirmWorktreeRemoval) {
+    const wt = this.repositoryStateCache
+      .get(repository)
+      .worktrees.find(wt => wt.path === worktreePath)
+    const options = { isMissing: wt?.isPrunable === true, checkout }
+
+    if (this.confirmWorktreeRemoval || options.isMissing) {
       this._showPopup({
         type: PopupType.DeleteWorktree,
         repository,
         worktreePath,
+        options,
       })
     } else {
-      this._deleteWorktree(repository, worktreePath).catch(e =>
+      this._deleteWorktree(repository, worktreePath, options).catch(e =>
         this.emitError(e)
       )
     }
@@ -7389,8 +7551,27 @@ export class AppStore extends TypedBaseStore<IAppState> {
   public async _deleteWorktree(
     repository: Repository,
     worktreePath: string,
-    force?: boolean
+    options: IDeleteWorktreeOptions = {}
   ): Promise<void> {
+    if (options.isMissing === true) {
+      const worktrees = await listWorktrees(repository)
+
+      if (!worktrees.some(wt => wt.path === worktreePath && wt.isPrunable)) {
+        await this._refreshWorktrees(repository)
+
+        if (options.checkout === undefined) {
+          const name = Path.basename(worktreePath)
+          this.emitError(
+            new Error(
+              `The worktree ${name} is available again and was left in place.`
+            )
+          )
+        }
+
+        return this.checkoutAfterRemoval(repository, options)
+      }
+    }
+
     const isDeletingCurrentWorktree = repository.path === worktreePath
     let originalWorktree: WorktreeEntry | null = null
 
@@ -7412,7 +7593,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     try {
-      await removeWorktree(repository.path, worktreePath, force)
+      await removeWorktree(repository.path, worktreePath, options.force)
     } catch (e) {
       this._closePopup(PopupType.DeleteWorktree)
       this._closePopup(PopupType.DeleteWorktreeFailed)
@@ -7422,12 +7603,27 @@ export class AppStore extends TypedBaseStore<IAppState> {
         worktreePath,
         error: e,
         originalWorktree,
+        options,
       })
       return
     }
 
     await this._refreshWorktrees(repository)
     this.statsStore.increment('worktreeDeletedCount')
+    this.checkoutAfterRemoval(repository, options)
+  }
+
+  private checkoutAfterRemoval(
+    repository: Repository,
+    { checkout }: IDeleteWorktreeOptions
+  ) {
+    if (checkout !== undefined) {
+      this._checkoutBranch(
+        repository,
+        checkout.branch,
+        checkout.strategy
+      ).catch(e => this.emitError(e))
+    }
   }
 
   /** This shouldn't be called directly. See 'Dispatcher'. */
@@ -9348,6 +9544,21 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
   }
 
+  public _setFileTreeView(fileTreeView: boolean) {
+    if (fileTreeView !== this.fileTreeView) {
+      setFileTreeView(fileTreeView)
+      this.fileTreeView = fileTreeView
+      this.emitUpdate()
+    }
+  }
+
+  public _toggleViewModeSwitchesVisibility() {
+    this.showViewModeSwitches = !this.showViewModeSwitches
+    setBoolean(showViewModeSwitchesKey, this.showViewModeSwitches)
+    this.updateMenuLabelsForSelectedRepository()
+    this.emitUpdate()
+  }
+
   public _setUpdateBannerVisibility(visibility: boolean) {
     this.isUpdateAvailableBannerVisible = visibility
 
@@ -9470,6 +9681,16 @@ export class AppStore extends TypedBaseStore<IAppState> {
   }
 
   public async _setAppFocusState(isFocused: boolean): Promise<void> {
+    // Timers don't advance while the computer sleeps, and other windows may
+    // have changed the snoozes. Gaining focus already emits an update below.
+    if (
+      isFocused &&
+      this.refreshSnoozedRepositories() &&
+      this.appIsFocused === isFocused
+    ) {
+      this.emitUpdate()
+    }
+
     if (this.appIsFocused !== isFocused) {
       this.appIsFocused = isFocused
       this.emitUpdate()
@@ -9529,45 +9750,32 @@ export class AppStore extends TypedBaseStore<IAppState> {
     log.info(
       `[AppStore] removing account ${account.login} (${account.name}) from store`
     )
-    await this.accountsStore.removeAccount(account)
+    const current = await this.accountsStore.removeAccount(account)
     await this.repositoriesStore.clearGitHubRepositoryLoginForEndpointAndLogin(
       account.endpoint,
       account.login
     )
-    if (account.token) {
-      await deleteToken(account)
+    if (current?.token) {
+      await revokeAccountToken(current, AbortSignal.timeout(30_000))
     }
   }
 
-  public async _updateAccount(account: Account): Promise<void> {
-    log.info(
-      `[AppStore] updating account ${account.login} (${account.name}) in store`
-    )
-    await this.accountsStore.modifyAccount(account)
-    this.emitUpdate()
-  }
-
-  private async _addAccount(account: Account): Promise<void> {
-    log.info(
-      `[AppStore] adding account ${account.login} (${account.name}) to store`
-    )
-    const storedAccount = await this.accountsStore.addAccount(account)
-
+  private onDidAuthenticate(account: Account): void {
+    log.info(`[AppStore] signed in as ${account.login} (${account.name})`)
     // If we're in the welcome flow and a user signs in we want to trigger
     // a refresh of the repositories available for cloning straight away
     // in order to have the list of repositories ready for them when they
     // get to the blankslate.
-    if (this.showWelcomeFlow && storedAccount !== null) {
-      this.apiRepositoriesStore.loadRepositories(storedAccount)
+    if (this.showWelcomeFlow) {
+      this.apiRepositoriesStore.loadRepositories(account)
     }
 
-    // Only announce the sign in if storing the account succeeded.
     // In the welcome flow, the banner is not needed as the user is already aware of the sign in
-    if (!this.showWelcomeFlow && storedAccount !== null) {
+    if (!this.showWelcomeFlow) {
       this._setBanner({
         type: BannerType.SuccessfulSignIn,
-        login: storedAccount.login,
-        friendlyEndpoint: storedAccount.friendlyEndpoint,
+        login: account.login,
+        friendlyEndpoint: account.friendlyEndpoint,
       })
     }
   }
@@ -9898,7 +10106,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private async isUsingLFS(repository: Repository): Promise<boolean> {
     try {
       return await isUsingLFS(repository)
-    } catch (error) {
+    } catch {
       return false
     }
   }
@@ -10710,6 +10918,19 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     await this.currentBranchPruner.testPrune()
+  }
+
+  /** This shouldn't be called directly. See 'Dispatcher'. */
+  public _getAccountTokenExpirationForTesting(account: Account) {
+    return this.accountsStore.getTokenExpirationForTesting(account)
+  }
+
+  /** This shouldn't be called directly. See 'Dispatcher'. */
+  public _setAccountTokenExpirationForTesting(
+    account: Account,
+    expiresAt: number | undefined
+  ) {
+    return this.accountsStore.setTokenExpirationForTesting(account, expiresAt)
   }
 
   public async _showCreateForkDialog(
@@ -12219,11 +12440,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
       ...(secret !== null && provider.authKind === 'bearer'
         ? { bearerToken: secret }
         : {}),
+      wireModel: model.id,
     }
 
     return {
       kind: 'byok',
       modelId: model.id,
+      ...(model.id === 'auto' ? { modelId: 'byok-auto' } : {}),
       provider: providerConfig,
       ...(model.reasoningEffort !== undefined
         ? { reasoningEffort: model.reasoningEffort }
