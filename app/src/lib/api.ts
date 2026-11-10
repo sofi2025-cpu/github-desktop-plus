@@ -37,7 +37,7 @@ import { urlWithoutCredentials } from './trampoline/url-without-credentials'
 import { CopilotError, parseCopilotPaymentRequiredError } from './copilot-error'
 import { BypassReasonType } from '../ui/secret-scanning/bypass-push-protection-dialog'
 import { assertNever } from './fatal-error'
-import { enableShortLivedTokens } from './feature-flag'
+import { deriveNumericAccountId } from './derive-numeric-account-id'
 
 const envEndpoint = process.env['DESKTOP_GITHUB_DOTCOM_API_ENDPOINT']
 const envHTMLURL = process.env['DESKTOP_GITHUB_DOTCOM_HTML_URL']
@@ -467,7 +467,7 @@ function toIAPIFullIdentityFromBitbucket(
   identity: IBitbucketAPIIdentity
 ): IAPIFullIdentity {
   return {
-    id: 0,
+    id: deriveNumericAccountId(identity.username),
     login: identity.username,
     avatar_url: identity.links.avatar.href,
     html_url: identity.links.html.href,
@@ -1860,6 +1860,25 @@ export class API {
       log.warn(`fetchRepository: an error occurred for '${owner}/${name}'`, e)
       return null
     }
+  }
+
+  /**
+   * Fetch a repo by its owner and name to find out whether the account can
+   * access it.
+   *
+   * Resolves to null when the repository isn't visible to the account (404).
+   * Unlike `fetchRepository`, any other failure (network errors, rate limits,
+   * server errors) is thrown so that it isn't mistaken for a lack of access.
+   */
+  public async fetchRepositoryIfAccessible(
+    owner: string,
+    name: string
+  ): Promise<IAPIFullRepository | null> {
+    const response = await this.ghRequest('GET', `repos/${owner}/${name}`)
+    if (response.status === HttpStatusCode.NotFound) {
+      return null
+    }
+    return parsedResponse<IAPIFullRepository>(response)
   }
 
   /**
@@ -3264,7 +3283,8 @@ export function getEndpointForRepository(url: string): string | null {
  * Get the URL for the HTML site. For example:
  *
  * https://api.github.com -> https://github.com
- * http://github.mycompany.com/api -> http://github.mycompany.com/
+ * http://github.mycompany.com/api -> http://github.mycompany.com
+ * https://github.mycompany.com:8443/api/v3 -> https://github.mycompany.com:8443
  */
 export function getHTMLURL(endpoint: string): string {
   if (envHTMLURL !== undefined) {
@@ -3296,7 +3316,7 @@ export function getHTMLURL(endpoint: string): string {
     }
 
     if (isGHE(endpoint)) {
-      const url = new window.URL(endpoint)
+      const url = new URL.URL(endpoint)
 
       url.pathname = '/'
 
@@ -3307,8 +3327,9 @@ export function getHTMLURL(endpoint: string): string {
       return url.toString()
     }
 
-    const parsed = URL.parse(endpoint)
-    return `${parsed.protocol}//${parsed.host}`
+    // Use the origin rather than the hostname so that GitHub Enterprise
+    // Server instances running on a non-default port retain their port.
+    return new URL.URL(endpoint).origin
   }
 }
 
@@ -3431,29 +3452,22 @@ export function deriveApiType<T>(
   }
 }
 
-/** Get the account for the endpoint. */
-export function getAccountForEndpoint(
-  accounts: ReadonlyArray<Account>,
-  endpoint: string,
-  login: string,
-  strict: boolean = false
-): Account | null {
-  return (
-    accounts.find(a => a.endpoint === endpoint && a.login === login) ||
-    (!strict && accounts.find(a => a.endpoint === endpoint)) ||
-    null
-  )
-}
-
 function pkceChallengeParams(codeChallenge: string): string {
   return `code_challenge=${codeChallenge}&code_challenge_method=S256`
 }
 
+/**
+ * Build an OAuth authorization URL.
+ *
+ * Supplying a login requests that account and disables sign-up. The caller
+ * must still verify the identity returned by OAuth.
+ */
 export function getOAuthAuthorizationURL(
   endpoint: string,
   state: string,
   codeChallenge: string,
-  shortLived = enableShortLivedTokens()
+  login: string | undefined,
+  shortLived: boolean
 ): string {
   const urlBase = getHTMLURL(endpoint)
   const scope = encodeURIComponent(
@@ -3463,9 +3477,15 @@ export function getOAuthAuthorizationURL(
     ).join(' ')
   )
   const pkceParams = pkceChallengeParams(codeChallenge)
+  // Without a specific login, let the user pick which of their browser's
+  // GitHub sessions to sign in with rather than silently using the active one.
+  const accountParameters =
+    login === undefined
+      ? '&prompt=select_account'
+      : `&login=${encodeURIComponent(login)}&allow_signup=false`
 
   return new window.URL(
-    `/login/oauth/authorize?client_id=${ClientID}&scope=${scope}&state=${state}&${pkceParams}`,
+    `/login/oauth/authorize?client_id=${ClientID}&scope=${scope}&state=${state}&${pkceParams}${accountParameters}`,
     urlBase
   ).toString()
 }
@@ -3786,6 +3806,26 @@ export class BitbucketAPI extends API {
     }
   }
 
+  public override async fetchRepositoryIfAccessible(
+    owner: string,
+    name: string
+  ): Promise<IAPIFullRepository | null> {
+    const response = await this.request(
+      this.endpoint,
+      'GET',
+      `repositories/${owner}/${name}`
+    )
+    if (
+      response.status === HttpStatusCode.NotFound ||
+      response.status === HttpStatusCode.Forbidden
+    ) {
+      return null
+    }
+    return toIAPIFullRepositoryFromBitbucket(
+      await parsedResponse<IBitbucketAPIRepository>(response)
+    )
+  }
+
   public override async fetchProtectedBranches() {
     // This could be implemented with GET /repositories/{workspace}/{repo_slug}/branch-restrictions,
     // but it would require increasing the OAuth scope to admin:repository, and currently this is
@@ -4072,6 +4112,24 @@ export class GitLabAPI extends API {
     }
   }
 
+  public override async fetchRepositoryIfAccessible(
+    owner: string,
+    name: string
+  ): Promise<IAPIFullRepository | null> {
+    const projectPath = encodeURIComponent(`${owner}/${name}`)
+    const response = await this.request(
+      this.endpoint,
+      'GET',
+      `projects/${projectPath}`
+    )
+    if (response.status === HttpStatusCode.NotFound) {
+      return null
+    }
+    return toIAPIFullRepositoryFromGitLab(
+      await parsedResponse<IGitLabAPIRepository>(response)
+    )
+  }
+
   private async fetchRepositoryById(
     id: number
   ): Promise<IGitLabAPIRepository | null> {
@@ -4329,6 +4387,23 @@ export class ForgejoAPI extends API {
       log.warn(`fetchRepository: an error occurred for '${owner}/${name}'`, e)
       return null
     }
+  }
+
+  public override async fetchRepositoryIfAccessible(
+    owner: string,
+    name: string
+  ): Promise<IAPIFullRepository | null> {
+    const response = await this.request(
+      this.endpoint,
+      'GET',
+      `repos/${owner}/${name}`
+    )
+    if (response.status === HttpStatusCode.NotFound) {
+      return null
+    }
+    return toIAPIFullRepositoryFromForgejo(
+      await parsedResponse<IForgejoAPIRepository>(response)
+    )
   }
 
   public override async fetchAllOpenPullRequests(

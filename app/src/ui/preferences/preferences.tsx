@@ -129,11 +129,13 @@ interface IPreferencesProps {
   readonly selectedDiffFontFamily: DiffFontFamily
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration | null
+  readonly useSystemDefaultProgram: boolean
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration | null
   readonly copilotAppPath: string | null
   readonly branchPresetScript: ICustomIntegration | null
   readonly titleBarStyle: TitleBarStyle
+  readonly showChangedFileCount: boolean
   readonly showWorktrees: boolean
   readonly showWorktreesInRepoList: boolean
   readonly showCompareTab: boolean
@@ -142,6 +144,7 @@ interface IPreferencesProps {
   readonly showBranchNameInRepoList: ShowBranchNameInRepoListSetting
   readonly branchSortOrder: BranchSortOrder
   readonly hideWindowOnQuit: boolean
+  readonly autoInstallUpdates: boolean
   readonly onEditGlobalGitConfig: () => void
   readonly underlineLinks: boolean
   readonly showDiffCheckMarks: boolean
@@ -183,6 +186,7 @@ interface IPreferencesState {
   readonly availableEditors: ReadonlyArray<string>
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration
+  readonly useSystemDefaultProgram: boolean
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration
   readonly copilotAppPath: string
@@ -192,6 +196,7 @@ interface IPreferencesState {
   readonly availableShells: ReadonlyArray<Shell>
   readonly selectedShell: Shell
   readonly titleBarStyle: TitleBarStyle
+  readonly showChangedFileCount: boolean
   readonly recentRepositoriesCount: number
   readonly showWorktrees: boolean
   readonly showWorktreesInRepoList: boolean
@@ -209,6 +214,7 @@ interface IPreferencesState {
   readonly showBranchNameInRepoList: ShowBranchNameInRepoListSetting
   readonly branchSortOrder: BranchSortOrder
   readonly hideWindowOnQuit: boolean
+  readonly autoInstallUpdates: boolean
 
   readonly initiallySelectedTheme: ApplicationTheme
   readonly initiallySelectedTabSize: number
@@ -269,6 +275,7 @@ export class Preferences extends React.Component<
       availableEditors: [],
       useCustomEditor: this.props.useCustomEditor,
       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
+      useSystemDefaultProgram: this.props.useSystemDefaultProgram,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell ?? DefaultCustomIntegration,
       copilotAppPath: this.props.copilotAppPath ?? '',
@@ -295,6 +302,7 @@ export class Preferences extends React.Component<
       availableShells: [],
       selectedShell: this.props.selectedShell,
       titleBarStyle: this.props.titleBarStyle,
+      showChangedFileCount: this.props.showChangedFileCount,
       recentRepositoriesCount: this.props.recentRepositoriesCount,
       showWorktrees: this.props.showWorktrees,
       showWorktreesInRepoList: this.props.showWorktreesInRepoList,
@@ -304,6 +312,7 @@ export class Preferences extends React.Component<
       showBranchNameInRepoList: this.props.showBranchNameInRepoList,
       branchSortOrder: this.props.branchSortOrder,
       hideWindowOnQuit: this.props.hideWindowOnQuit,
+      autoInstallUpdates: this.props.autoInstallUpdates,
       initiallySelectedTheme: this.props.selectedTheme,
       initiallySelectedTabSize: this.props.selectedTabSize,
       alwaysShowWorktreeList: this.props.alwaysShowWorktreeList,
@@ -399,6 +408,7 @@ export class Preferences extends React.Component<
       availableEditors,
       useCustomEditor: this.props.useCustomEditor,
       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
+      useSystemDefaultProgram: this.props.useSystemDefaultProgram,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell ?? DefaultCustomIntegration,
       copilotAppPath: this.props.copilotAppPath ?? '',
@@ -668,6 +678,7 @@ export class Preferences extends React.Component<
             selectedShell={this.state.selectedShell}
             useCustomEditor={this.state.useCustomEditor}
             customEditor={this.state.customEditor}
+            useSystemDefaultProgram={this.state.useSystemDefaultProgram}
             useCustomShell={this.state.useCustomShell}
             customShell={this.state.customShell}
             copilotAppPath={this.state.copilotAppPath}
@@ -676,6 +687,9 @@ export class Preferences extends React.Component<
             onSelectedShellChanged={this.onSelectedShellChanged}
             onUseCustomEditorChanged={this.onUseCustomEditorChanged}
             onCustomEditorChanged={this.onCustomEditorChanged}
+            onUseSystemDefaultProgramChanged={
+              this.onUseSystemDefaultProgramChanged
+            }
             onUseCustomShellChanged={this.onUseCustomShellChanged}
             onCustomShellChanged={this.onCustomShellChanged}
             onCopilotAppPathChanged={this.onCopilotAppPathChanged}
@@ -776,6 +790,8 @@ export class Preferences extends React.Component<
             onAlwaysShowWorktreeListChanged={
               this.onAlwaysShowWorktreeListChanged
             }
+            showChangedFileCount={this.state.showChangedFileCount}
+            onShowChangedFileCountChange={this.onShowChangedFileCountChange}
             recentRepositoriesCount={this.state.recentRepositoriesCount}
             onRecentRepositoriesCountChanged={
               this.onRecentRepositoriesCountChanged
@@ -894,6 +910,7 @@ export class Preferences extends React.Component<
             useExternalCredentialHelper={this.state.useExternalCredentialHelper}
             repositoryIndicatorsEnabled={this.state.repositoryIndicatorsEnabled}
             hideWindowOnQuit={this.state.hideWindowOnQuit}
+            autoInstallUpdates={this.state.autoInstallUpdates}
             onUseWindowsOpenSSHChanged={this.onUseWindowsOpenSSHChanged}
             onOptOutofReportingChanged={this.onOptOutofReportingChanged}
             onUseExternalCredentialHelperChanged={
@@ -903,6 +920,7 @@ export class Preferences extends React.Component<
               this.onRepositoryIndicatorsEnabledChanged
             }
             onHideWindowOnQuitChanged={this.onHideWindowOnQuitChanged}
+            onAutoInstallUpdatesChanged={this.onAutoInstallUpdatesChanged}
           />
         )
         break
@@ -940,6 +958,10 @@ export class Preferences extends React.Component<
 
   private onHideWindowOnQuitChanged = (hideWindowOnQuit: boolean) => {
     this.setState({ hideWindowOnQuit })
+  }
+
+  private onAutoInstallUpdatesChanged = (autoInstallUpdates: boolean) => {
+    this.setState({ autoInstallUpdates })
   }
 
   private onLockFileDeleted = () => {
@@ -1083,6 +1105,12 @@ export class Preferences extends React.Component<
     this.setState({ customEditor })
   }
 
+  private onUseSystemDefaultProgramChanged = (
+    useSystemDefaultProgram: boolean
+  ) => {
+    this.setState({ useSystemDefaultProgram })
+  }
+
   private onUseCustomShellChanged = (useCustomShell: boolean) => {
     this.setState({ useCustomShell })
   }
@@ -1197,6 +1225,10 @@ export class Preferences extends React.Component<
 
   private onTitleBarStyleChanged = (titleBarStyle: TitleBarStyle) => {
     this.setState({ titleBarStyle })
+  }
+
+  private onShowChangedFileCountChange = (showChangedFileCount: boolean) => {
+    this.setState({ showChangedFileCount })
   }
 
   private onRecentRepositoriesCountChanged = (
@@ -1314,6 +1346,10 @@ export class Preferences extends React.Component<
         )
       }
 
+      if (this.state.showChangedFileCount !== this.props.showChangedFileCount) {
+        dispatcher.setShowChangedFileCount(this.state.showChangedFileCount)
+      }
+
       if (
         this.state.recentRepositoriesCount !==
         this.props.recentRepositoriesCount
@@ -1351,6 +1387,10 @@ export class Preferences extends React.Component<
 
       if (this.state.hideWindowOnQuit !== this.props.hideWindowOnQuit) {
         dispatcher.setHideWindowOnQuit(this.state.hideWindowOnQuit)
+      }
+
+      if (this.state.autoInstallUpdates !== this.props.autoInstallUpdates) {
+        dispatcher.setAutoInstallUpdates(this.state.autoInstallUpdates)
       }
 
       if (this.state.hooksPreferencesDirty) {
@@ -1398,6 +1438,8 @@ export class Preferences extends React.Component<
       customShell,
       branchPresetScript,
     } = this.state
+
+    dispatcher.setUseSystemDefaultProgram(this.state.useSystemDefaultProgram)
 
     const isValidCustomEditor =
       customEditor && (await isValidCustomIntegration(customEditor))

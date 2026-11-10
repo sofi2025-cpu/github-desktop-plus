@@ -12,7 +12,7 @@ import {
   getUpdateBranchStrategy,
   isRepositoryWithForkedGitHubRepository,
 } from '../../models/repository'
-import { Dialog, DialogError, DialogFooter } from '../dialog'
+import { Dialog, DialogContent, DialogError, DialogFooter } from '../dialog'
 import { NoRemote } from './no-remote'
 import { readGitIgnoreAtRoot } from '../../lib/git'
 import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
@@ -23,15 +23,13 @@ import {
   getConfigValue,
   getGlobalConfigValue,
   getConfigValueWithOrigin,
-  removeConfigValue,
-  setConfigValue,
   IConfigValueOrigin,
 } from '../../lib/git/config'
 import {
   gitAuthorNameIsValid,
   InvalidGitAuthorNameMessage,
 } from '../lib/identifier-rules'
-import { Account } from '../../models/account'
+import { Account, isSameAccount } from '../../models/account'
 import { Octicon } from '../octicons'
 import * as octicons from '../octicons/octicons.generated'
 import { Integrations } from './integrations'
@@ -41,6 +39,8 @@ import {
 } from '../../lib/custom-integration'
 import { getAvailableEditors } from '../../lib/editors/lookup'
 import { UpdateBranchStrategy } from '../../lib/update-branch-strategy'
+import { EditorOverride } from '../../models/editor-override'
+import { Select } from '../lib/select'
 
 interface IRepositorySettingsProps {
   readonly initialSelectedTab?: RepositorySettingsTab
@@ -87,7 +87,8 @@ interface IRepositorySettingsState {
   readonly selectedExternalEditor: string | null
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration
-  readonly repositoryAccount: Account | null
+  readonly useSystemDefaultProgram: boolean
+  readonly selectedLogin?: string | null
 }
 
 export class RepositorySettings extends React.Component<
@@ -129,7 +130,8 @@ export class RepositorySettings extends React.Component<
         path: '',
         arguments: TargetPathArgument,
       },
-      repositoryAccount: props.repositoryAccount,
+      useSystemDefaultProgram:
+        props.repository.customEditorOverride?.useSystemDefaultProgram ?? false,
     }
   }
 
@@ -277,22 +279,22 @@ export class RepositorySettings extends React.Component<
     switch (tab) {
       case RepositorySettingsTab.Remote: {
         const remote = this.state.remote
-        if (remote) {
-          return (
-            <Remote
-              remote={remote}
-              repository={this.props.repository}
-              accounts={this.props.accounts}
-              account={this.state.repositoryAccount}
-              defaultBranch={this.state.defaultBranch}
-              onRemoteUrlChanged={this.onRemoteUrlChanged}
-              onDefaultBranchChanged={this.onDefaultBranchChanged}
-              onSelectedAccountChanged={this.onSelectedAccountChanged}
-            />
-          )
-        } else {
-          return <NoRemote onPublish={this.onPublish} />
-        }
+        return (
+          <DialogContent>
+            {remote ? (
+              <Remote
+                remote={remote}
+                repository={this.props.repository}
+                defaultBranch={this.state.defaultBranch}
+                onRemoteUrlChanged={this.onRemoteUrlChanged}
+                onDefaultBranchChanged={this.onDefaultBranchChanged}
+              />
+            ) : (
+              <NoRemote onPublish={this.onPublish} />
+            )}
+            {this.renderAccount()}
+          </DialogContent>
+        )
       }
       case RepositorySettingsTab.IgnoredFiles: {
         return (
@@ -322,7 +324,7 @@ export class RepositorySettings extends React.Component<
       case RepositorySettingsTab.GitConfig: {
         return (
           <GitConfig
-            account={this.props.repositoryAccount}
+            account={this.selectedAccount}
             gitConfigLocation={this.state.gitConfigLocation}
             updateBranchStrategy={this.state.updateBranchStrategy}
             onGitConfigLocationChanged={this.onGitConfigLocationChanged}
@@ -353,6 +355,10 @@ export class RepositorySettings extends React.Component<
             onSelectedEditorChanged={this.onSelectedEditorChanged}
             onUseCustomEditorChanged={this.onUseCustomEditorChanged}
             onCustomEditorChanged={this.onCustomEditorChanged}
+            useSystemDefaultProgram={this.state.useSystemDefaultProgram}
+            onUseSystemDefaultProgramChanged={
+              this.onUseSystemDefaultProgramChanged
+            }
           />
         )
       }
@@ -360,6 +366,63 @@ export class RepositorySettings extends React.Component<
       default:
         return assertNever(tab, `Unknown tab type: ${tab}`)
     }
+  }
+
+  private get selectedLogin() {
+    return this.state.selectedLogin === undefined
+      ? this.props.repository.login
+      : this.state.selectedLogin
+  }
+
+  private get selectedAccount() {
+    const endpoint = this.props.repository.gitHubRepository?.endpoint
+    const login = this.selectedLogin
+    return endpoint === undefined
+      ? this.props.repositoryAccount
+      : this.props.accounts.find(
+          a => login !== null && isSameAccount(a, { endpoint, login })
+        ) ?? null
+  }
+
+  private renderAccount() {
+    const endpoint = this.props.repository.gitHubRepository?.endpoint
+    if (endpoint === undefined) {
+      return null
+    }
+
+    const accounts = this.props.accounts.filter(a => a.endpoint === endpoint)
+    const login = this.selectedLogin
+    const signedOut = login !== null && this.selectedAccount === null
+
+    return (
+      <div className="repository-account">
+        <Select
+          label="Account"
+          value={this.selectedAccount?.login ?? login ?? ''}
+          onChange={this.onAccountChanged}
+        >
+          <option value="">None (unassigned)</option>
+          {signedOut && (
+            <option value={login ?? ''} disabled={true}>
+              @{login} (signed out)
+            </option>
+          )}
+          {accounts.map(account => (
+            <option key={account.login} value={account.login}>
+              @{account.login}
+            </option>
+          ))}
+        </Select>
+        <p className="repository-account-description">
+          The account used for GitHub API requests and HTTPS authentication.
+          This does not change your Git author name or email.
+        </p>
+      </div>
+    )
+  }
+
+  private onAccountChanged = (event: React.FormEvent<HTMLSelectElement>) => {
+    this.setState({ selectedLogin: event.currentTarget.value || null })
   }
 
   private onPublish = () => {
@@ -376,6 +439,24 @@ export class RepositorySettings extends React.Component<
   private onSubmit = async () => {
     this.setState({ disabled: true, errors: undefined })
     const errors = new Array<JSX.Element | string>()
+    // Changing the account replaces the repository, and setting the remote
+    // URL must refresh the GitHub association for the replacement.
+    let repository = this.props.repository
+
+    if (
+      repository.gitHubRepository !== null &&
+      this.state.selectedLogin !== undefined &&
+      this.state.selectedLogin !== repository.login
+    ) {
+      try {
+        repository = await this.props.dispatcher.updateRepositoryAccount(
+          repository,
+          this.state.selectedLogin
+        )
+      } catch (e) {
+        errors.push(`Failed saving the repository account: ${e}`)
+      }
+    }
 
     if (this.state.remote && this.props.remote) {
       const trimmedUrl = this.state.remote.url.trim()
@@ -383,7 +464,7 @@ export class RepositorySettings extends React.Component<
       if (trimmedUrl !== this.props.remote.url) {
         try {
           await this.props.dispatcher.setRemoteURL(
-            this.props.repository,
+            repository,
             this.props.remote.name,
             trimmedUrl
           )
@@ -403,7 +484,7 @@ export class RepositorySettings extends React.Component<
     ) {
       try {
         await this.props.dispatcher.updateRepositoryDefaultBranch(
-          this.props.repository,
+          repository,
           this.state.defaultBranch
         )
       } catch (e) {
@@ -432,17 +513,6 @@ export class RepositorySettings extends React.Component<
 
     // only update this if it will be different from what we have stored
     if (
-      this.state.repositoryAccount?.login !==
-      this.props.repositoryAccount?.login
-    ) {
-      await this.props.dispatcher.updateRepositoryAccount(
-        this.props.repository,
-        this.state.repositoryAccount
-      )
-    }
-
-    // only update this if it will be different from what we have stored
-    if (
       this.state.forkContributionTarget !==
         this.props.repository.workflowPreferences.forkContributionTarget ||
       this.state.updateBranchStrategy !==
@@ -462,62 +532,67 @@ export class RepositorySettings extends React.Component<
     const gitLocationChanged =
       this.state.gitConfigLocation !== this.state.initialGitConfigLocation
 
-    if (
-      gitLocationChanged &&
-      this.state.gitConfigLocation === GitConfigLocation.Global
-    ) {
-      // If it's now configured to use the global config, just delete the local
-      // user info in this repository.
-      await removeConfigValue(this.props.repository, 'user.name')
-      await removeConfigValue(this.props.repository, 'user.email')
-
-      shouldRefreshAuthor = true
-    } else if (this.state.gitConfigLocation === GitConfigLocation.Local) {
-      // Otherwise, update the local name and email if needed
-      if (this.state.committerName !== this.state.initialCommitterName) {
-        await setConfigValue(
-          this.props.repository,
-          'user.name',
-          this.state.committerName
-        )
+    try {
+      if (
+        gitLocationChanged &&
+        this.state.gitConfigLocation === GitConfigLocation.Global
+      ) {
+        // If it's now configured to use the global config, just delete the local
+        // user info in this repository.
         shouldRefreshAuthor = true
-      }
-
-      if (this.state.committerEmail !== this.state.initialCommitterEmail) {
-        await setConfigValue(
+        await this.props.dispatcher.updateRepositoryCommitter(
           this.props.repository,
-          'user.email',
-          this.state.committerEmail
+          null,
+          null
         )
-        shouldRefreshAuthor = true
+      } else if (this.state.gitConfigLocation === GitConfigLocation.Local) {
+        // Otherwise, update the local name and email if needed
+        const name =
+          this.state.committerName !== this.state.initialCommitterName
+            ? this.state.committerName
+            : undefined
+        const email =
+          this.state.committerEmail !== this.state.initialCommitterEmail
+            ? this.state.committerEmail
+            : undefined
+        if (name !== undefined || email !== undefined) {
+          shouldRefreshAuthor = true
+          await this.props.dispatcher.updateRepositoryCommitter(
+            this.props.repository,
+            name,
+            email
+          )
+        }
       }
+    } catch (error) {
+      log.error(
+        `RepositorySettings: unable to update Git identity at ${this.props.repository.path}`,
+        error
+      )
+      errors.push(`Failed updating Git identity: ${error}`)
     }
 
     if (shouldRefreshAuthor) {
       this.props.dispatcher.refreshAuthor(this.props.repository)
     }
 
+    const newEditorOverride: EditorOverride | null = this.state.useDefaultEditor
+      ? null
+      : {
+          selectedExternalEditor: this.state.selectedExternalEditor,
+          useCustomEditor: this.state.useCustomEditor,
+          customEditor: this.state.customEditor,
+          useSystemDefaultProgram: this.state.useSystemDefaultProgram,
+        }
     if (
-      this.state.useDefaultEditor !==
-        !this.props.repository.customEditorOverride ||
-      this.state.selectedExternalEditor !==
-        this.props.repository.customEditorOverride?.selectedExternalEditor ||
-      this.state.useCustomEditor !==
-        this.props.repository.customEditorOverride.useCustomEditor ||
-      this.state.customEditor.path !==
-        this.props.repository.customEditorOverride.customEditor?.path ||
-      this.state.customEditor.arguments !==
-        this.props.repository.customEditorOverride.customEditor.arguments
+      hasEditorOverrideChanged(
+        this.props.repository.customEditorOverride,
+        newEditorOverride
+      )
     ) {
       await this.props.dispatcher.updateRepositoryEditorOverride(
-        this.props.repository,
-        this.state.useDefaultEditor
-          ? null
-          : {
-              selectedExternalEditor: this.state.selectedExternalEditor,
-              useCustomEditor: this.state.useCustomEditor,
-              customEditor: this.state.customEditor,
-            }
+        repository,
+        newEditorOverride
       )
     }
 
@@ -557,10 +632,6 @@ export class RepositorySettings extends React.Component<
 
   private onDefaultBranchChanged = (branch: string) => {
     this.setState({ defaultBranch: branch })
-  }
-
-  private onSelectedAccountChanged = (account: Account) => {
-    this.setState({ repositoryAccount: account })
   }
 
   private onGitConfigLocationChanged = (value: GitConfigLocation) => {
@@ -603,4 +674,28 @@ export class RepositorySettings extends React.Component<
   private onCustomEditorChanged = (customEditor: ICustomIntegration) => {
     this.setState({ customEditor })
   }
+
+  private onUseSystemDefaultProgramChanged = (
+    useSystemDefaultProgram: boolean
+  ) => {
+    this.setState({ useSystemDefaultProgram })
+  }
+}
+
+function hasEditorOverrideChanged(
+  previous: EditorOverride | null,
+  next: EditorOverride | null
+): boolean {
+  if (previous === null || next === null) {
+    return previous !== next
+  }
+
+  return (
+    previous.selectedExternalEditor !== next.selectedExternalEditor ||
+    previous.useCustomEditor !== next.useCustomEditor ||
+    previous.customEditor?.path !== next.customEditor?.path ||
+    previous.customEditor?.arguments !== next.customEditor?.arguments ||
+    (previous.useSystemDefaultProgram ?? false) !==
+      (next.useSystemDefaultProgram ?? false)
+  )
 }

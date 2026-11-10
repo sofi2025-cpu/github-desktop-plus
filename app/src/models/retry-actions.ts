@@ -1,5 +1,5 @@
 import { Repository } from './repository'
-import { CloneOptions } from './clone-options'
+import { CloneRepositoryOptions } from './clone-options'
 import { Branch } from './branch'
 import { Commit, CommitOneLine, ICommitContext } from './commit'
 import { WorkingDirectoryFileChange } from './status'
@@ -31,6 +31,7 @@ export enum RetryActionType {
   StashChanges,
   ResetAndPull,
   PopStash,
+  CherryPickToBranches,
 }
 
 /** The retriable actions and their associated data. */
@@ -48,8 +49,7 @@ export type RetryAction =
       name: string
       url: string
       path: string
-      options: CloneOptions
-      login: string | null
+      options: CloneRepositoryOptions
     }
   | {
       type: RetryActionType.Checkout
@@ -72,6 +72,13 @@ export type RetryAction =
       type: RetryActionType.CherryPick
       repository: Repository
       targetBranch: Branch
+      commits: ReadonlyArray<CommitOneLine>
+      sourceBranch: Branch | null
+    }
+  | {
+      type: RetryActionType.CherryPickToBranches
+      repository: Repository
+      targetBranches: ReadonlyArray<Branch>
       commits: ReadonlyArray<CommitOneLine>
       sourceBranch: Branch | null
     }

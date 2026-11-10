@@ -11,7 +11,7 @@ import type {
   ICopilotResolutionSummary,
   ICopilotSkippedFile,
 } from './copilot-conflict-resolution'
-import { Account } from '../models/account'
+import { Account, IAccountIdentity } from '../models/account'
 import { CommitIdentity } from '../models/commit-identity'
 import { IConfigValueOrigin } from './git/config'
 import { IDiff, ImageDiffType } from '../models/diff'
@@ -33,6 +33,8 @@ import {
 import { Author } from '../models/author'
 import { MergeTreeResult } from '../models/merge'
 import { ICommitMessage } from '../models/commit-message'
+import { CommitMode } from '../models/commit-mode'
+import { AssistedCommitRunState } from '../models/assisted-commit-run'
 import {
   IRevertProgress,
   Progress,
@@ -338,6 +340,12 @@ export interface IAppState {
   /** The currently selected tab for Clone Repository. */
   readonly selectedCloneRepositoryTab: CloneRepositoryTab
 
+  /**
+   * The account last picked in the GitHub tab of Clone Repository during this
+   * session, or null if none has been picked yet.
+   */
+  readonly selectedCloneAccount: IAccountIdentity | null
+
   /** The currently selected tab for the Branches foldout. */
   readonly selectedBranchesTab: BranchesTab
 
@@ -352,6 +360,9 @@ export interface IAppState {
 
   /** Whether to show the worktree dropdown even without linked worktrees. */
   readonly alwaysShowWorktreeList: boolean
+
+  /** Whether to show changed file counts in the repository list */
+  readonly showChangedFileCount: boolean
 
   /** The number of recent repositories to show in the repository list */
   readonly recentRepositoriesCount: number
@@ -432,6 +443,12 @@ export interface IAppState {
 
   /** Info needed to launch a custom editor chosen by the user. */
   readonly customEditor: ICustomIntegration | null
+
+  /**
+   * Whether or not the user wants to open paths with the program associated
+   * with them by the operating system instead of an external editor.
+   */
+  readonly useSystemDefaultProgram: boolean
 
   /** Whether or not the user wants to use a custom shell. */
   readonly useCustomShell: boolean
@@ -910,6 +927,18 @@ export interface IChangesState {
 
   /** The commit message for a work-in-progress commit in the changes view. */
   readonly commitMessage: ICommitMessage
+
+  /** The repository's preferred commit mode, even when assisted commits are unavailable. */
+  readonly commitMode: CommitMode
+
+  /** Explicit per-repository opt-in. Does not affect manual commits. */
+  readonly pushAfterAssistedCommit: boolean
+
+  /** The repository's awaited assisted run, independent of the selected repository and mounted UI. */
+  readonly assistedCommit: AssistedCommitRunState
+
+  /** A real callback may be offered only when the account, SDK, runtime, and preview gates pass. */
+  readonly assistedCommitAvailable: boolean
 
   /**
    * Whether or not to show a field for adding co-authors to

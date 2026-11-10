@@ -51,6 +51,7 @@ interface ICompareSidebarProps {
   readonly selectedCommitShas: ReadonlyArray<string>
   readonly branchSortOrder: BranchSortOrder
   readonly onRevertCommit: (commit: Commit) => void
+  readonly onRevertCommits: (commits: ReadonlyArray<Commit>) => void
   readonly onAmendCommit: (commit: Commit, isLocalCommit: boolean) => void
   readonly onViewCommitOnGitHub: (sha: string) => void
   readonly onCompareListScrolled: (scrollTop: number) => void
@@ -64,6 +65,8 @@ interface ICompareSidebarProps {
   readonly tagsToPush: ReadonlyArray<string> | null
   readonly aheadBehindStore: AheadBehindStore
   readonly isMultiCommitOperationInProgress?: boolean
+  /** Whether assisted execution or retained recovery locks this repository. */
+  readonly isAssistedCommitRepositoryLocked: boolean
   readonly shasToHighlight: ReadonlyArray<string>
   readonly accounts: ReadonlyArray<Account>
   readonly preferAbsoluteDates: boolean
@@ -324,6 +327,11 @@ export class CompareSidebar extends React.Component<
             ? this.props.onRevertCommit
             : undefined
         }
+        onRevertCommits={
+          ableToRevertCommit(this.props.compareState.formState)
+            ? this.props.onRevertCommits
+            : undefined
+        }
         onAmendCommit={this.props.onAmendCommit}
         onCommitsSelected={this.onCommitsSelected}
         onScroll={this.onScroll}
@@ -346,6 +354,9 @@ export class CompareSidebar extends React.Component<
         disableSquashing={formState.kind === HistoryTabMode.Compare}
         isMultiCommitOperationInProgress={
           this.props.isMultiCommitOperationInProgress
+        }
+        isAssistedCommitRepositoryLocked={
+          this.props.isAssistedCommitRepositoryLocked
         }
         keyboardReorderData={this.state.keyboardReorderData}
         accounts={this.props.accounts}

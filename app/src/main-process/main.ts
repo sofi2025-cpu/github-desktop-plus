@@ -11,6 +11,7 @@ import {
   systemPreferences,
   nativeTheme,
   WebContents,
+  autoUpdater,
 } from 'electron'
 import * as Fs from 'fs'
 import * as Path from 'path'
@@ -42,6 +43,7 @@ import { createAuthenticatedImageTokenResolver } from './authenticated-image-tok
 import { installAliveOriginFilter } from './alive-origin-filter'
 import { installSameOriginFilter } from './same-origin-filter'
 import * as ipcMain from './ipc-main'
+import * as ipcWebContents from './ipc-webcontents'
 import {
   getArchitecture,
   isAppRunningUnderARM64Translation,
@@ -372,8 +374,18 @@ async function handleCommandLineArguments(argv: string[]): Promise<boolean> {
   // `[executable path] --protocol-launcher "%1"`. Note that extra command
   // line arguments might be added by Chromium
   // (https://electronjs.org/docs/api/app#event-second-instance).
+  const isWindowsProtocolLaunch =
+    __WIN32__ && args['protocol-launcher'] === true
 
-  if (__LINUX__ || (__WIN32__ && args['protocol-launcher'] === true)) {
+  // On Linux the protocol handler is registered through a .desktop file
+  // (`Exec=... %u`), so the URL is passed as a plain argument without
+  // --protocol-launcher. macOS receives URLs through the `open-url` event
+  // instead, which Electron doesn't emit on Linux.
+  const prefixes = Array.from(possibleProtocols, p => `${p}://`)
+  const isLinuxProtocolLaunch =
+    __LINUX__ && argv.some(arg => prefixes.some(p => arg.startsWith(p)))
+
+  if (isWindowsProtocolLaunch || isLinuxProtocolLaunch) {
     // On Windows we'll end up getting called with something like
     // `--protocol-launcher --allow-file-access-from-files x-github-client://..`
     // which minimist naturally interprets as
@@ -384,7 +396,6 @@ async function handleCommandLineArguments(argv: string[]): Promise<boolean> {
     // sure that Chromium won't add more switches later on which is why we have
     // to resort to looking through all arguments looking for something that
     // appears to be an app url.
-    const prefixes = Array.from(possibleProtocols, p => `${p}://`)
     const matchingUrl = argv.find(arg => {
       if (prefixes.some(p => arg.startsWith(p))) {
         try {
@@ -700,9 +711,42 @@ app.on('ready', () => {
     clipboard.writeText(text)
   )
 
-  ipcMain.handle('check-for-updates', async (event, url) =>
-    getAppWindowFromWebContents(event.sender)?.checkForUpdates(url)
-  )
+  // Each window checks for updates on its own schedule, but they share the
+  // same autoUpdater, which fails if Update.exe is already running with other
+  // arguments. Every window receives the outcome of the check in progress.
+  let isCheckingForUpdates = false
+  let isUpdateDownloaded = false
+  const onUpdateCheckFinished = () => {
+    isCheckingForUpdates = false
+  }
+  autoUpdater.on('error', onUpdateCheckFinished)
+  autoUpdater.on('update-not-available', onUpdateCheckFinished)
+  autoUpdater.on('update-downloaded', () => {
+    isCheckingForUpdates = false
+    isUpdateDownloaded = true
+  })
+
+  ipcMain.handle('check-for-updates', async (event, url) => {
+    // Checking again once an update is staged would make Squirrel report that
+    // no update is available (or download a second one), so windows opened
+    // later just learn about the pending update instead.
+    if (isUpdateDownloaded) {
+      ipcWebContents.send(event.sender, 'auto-updater-update-downloaded')
+      return undefined
+    }
+
+    const appWindow = getAppWindowFromWebContents(event.sender)
+    if (isCheckingForUpdates || appWindow === null) {
+      return undefined
+    }
+
+    isCheckingForUpdates = true
+    const error = await appWindow.checkForUpdates(url)
+    if (error !== undefined) {
+      isCheckingForUpdates = false
+    }
+    return error
+  })
 
   ipcMain.on('quit-and-install-updates', event =>
     getAppWindowFromWebContents(event.sender)?.quitAndInstallUpdate()

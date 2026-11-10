@@ -67,6 +67,7 @@ interface ICommitGraphSidebarProps {
   readonly allBranches: ReadonlyArray<Branch>
   readonly selectedCommitShas: ReadonlyArray<string>
   readonly onRevertCommit: (commit: Commit) => void
+  readonly onRevertCommits: (commits: ReadonlyArray<Commit>) => void
   readonly onAmendCommit: (commit: Commit, isLocalCommit: boolean) => void
   readonly onViewCommitOnGitHub: (sha: string) => void
   readonly onCompareListScrolled: (scrollTop: number) => void
@@ -79,6 +80,8 @@ interface ICommitGraphSidebarProps {
   readonly localTags: Map<string, string> | null
   readonly tagsToPush: ReadonlyArray<string> | null
   readonly isMultiCommitOperationInProgress?: boolean
+  /** Whether assisted execution or retained recovery locks this repository. */
+  readonly isAssistedCommitRepositoryLocked?: boolean
   readonly shasToHighlight: ReadonlyArray<string>
   readonly accounts: ReadonlyArray<Account>
   readonly preferAbsoluteDates: boolean
@@ -830,6 +833,7 @@ export class CommitGraphSidebar extends React.Component<
         onUndoCommit={this.onUndoCommit}
         onResetToCommit={this.onResetToCommit}
         onRevertCommit={this.props.onRevertCommit}
+        onRevertCommits={this.props.onRevertCommits}
         onAmendCommit={this.props.onAmendCommit}
         onCommitsSelected={this.onCommitsSelected}
         onScroll={this.onScroll}
@@ -852,6 +856,9 @@ export class CommitGraphSidebar extends React.Component<
         disableSquashing={commitGraphIsTreeMode}
         isMultiCommitOperationInProgress={
           this.props.isMultiCommitOperationInProgress
+        }
+        isAssistedCommitRepositoryLocked={
+          this.props.isAssistedCommitRepositoryLocked
         }
         keyboardReorderData={this.state.keyboardReorderData}
         accounts={this.props.accounts}
